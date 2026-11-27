@@ -1,0 +1,693 @@
+{
+  "name": "Transfer with a frozen backbone",
+  "description": "Pretrain on 0-4, learn 5-9 from 50",
+  "gallery": {
+    "main_tag": "training",
+    "tags": [
+      "vision",
+      "digits",
+      "transfer-learning",
+      "fine-tuning"
+    ],
+    "order": 60
+  },
+  "settings": {
+    "seed": 0
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "csv",
+      "type": "CSVReader",
+      "position": {
+        "x": 360,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "path": "data/samples/digits.csv",
+          "target_column": "label",
+          "target_type": "class"
+        }
+      }
+    },
+    {
+      "id": "scale",
+      "type": "ScalarMultiply",
+      "position": {
+        "x": 720,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "scalar": 0.0625
+        }
+      }
+    },
+    {
+      "id": "tasks",
+      "type": "PythonScript",
+      "position": {
+        "x": 1080,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "code": "import torch\n\ndef run(inputs, params):\n    # Task A: digits 0-4, plenty of data. Task B: digits 5-9, only 10 labelled\n    # images per digit to train on, and the rest of 5-9 to test on.\n    x = inputs[\"in1\"]\n    y = torch.tensor([int(v) for v in inputs[\"in2\"]])\n    g = torch.Generator().manual_seed(0)\n    a = y < 5\n    xb, yb = x[~a], y[~a] - 5\n    train_idx, test_idx = [], []\n    for digit in range(5):\n        idx = (yb == digit).nonzero().flatten()\n        idx = idx[torch.randperm(len(idx), generator=g)]\n        train_idx += idx[:10].tolist()\n        test_idx += idx[10:].tolist()\n    return {\"out1\": x[a], \"out2\": y[a], \"out3\": xb[train_idx], \"out4\": yb[train_idx],\n            \"out5\": xb[test_idx], \"out6\": yb[test_idx]}\n",
+          "input_ports": 2,
+          "output_ports": 6,
+          "input_types": "TENSOR,LIST",
+          "output_types": "TENSOR,TENSOR,TENSOR,TENSOR,TENSOR,TENSOR"
+        }
+      }
+    },
+    {
+      "id": "ds-a",
+      "type": "TensorDataset",
+      "position": {
+        "x": 1809,
+        "y": -260
+      },
+      "data": {
+        "params": {
+          "target_type": "class"
+        }
+      }
+    },
+    {
+      "id": "ds-b",
+      "type": "TensorDataset",
+      "position": {
+        "x": 1809,
+        "y": 312
+      },
+      "data": {
+        "params": {
+          "target_type": "class"
+        }
+      }
+    },
+    {
+      "id": "ds-b-test",
+      "type": "TensorDataset",
+      "position": {
+        "x": 1809,
+        "y": 624
+      },
+      "data": {
+        "params": {
+          "target_type": "class"
+        }
+      }
+    },
+    {
+      "id": "dl-a",
+      "type": "DataLoader",
+      "position": {
+        "x": 2169,
+        "y": -260
+      },
+      "data": {
+        "params": {
+          "batch_size": 64,
+          "shuffle": true
+        }
+      }
+    },
+    {
+      "id": "dl-b",
+      "type": "DataLoader",
+      "position": {
+        "x": 2169,
+        "y": 312
+      },
+      "data": {
+        "params": {
+          "batch_size": 16,
+          "shuffle": true
+        }
+      }
+    },
+    {
+      "id": "a-model",
+      "type": "SequentialModel",
+      "position": {
+        "x": 2529,
+        "y": -260
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\": 2, \"nodes\": [{\"id\": \"in\", \"type\": \"Input\", \"ports\": [{\"id\": \"p_x\", \"name\": \"x\"}]}, {\"id\": \"backbone\", \"type\": \"Linear\", \"params\": {\"in_features\": 64, \"out_features\": 256}}, {\"id\": \"act\", \"type\": \"ReLU\"}, {\"id\": \"head\", \"type\": \"Linear\", \"params\": {\"in_features\": 256, \"out_features\": 5}}, {\"id\": \"out\", \"type\": \"Output\", \"ports\": [{\"id\": \"p_y\", \"name\": \"y\"}]}], \"edges\": [{\"id\": \"e1\", \"source\": \"in\", \"sourceHandle\": \"p_x\", \"target\": \"backbone\"}, {\"id\": \"e2\", \"source\": \"backbone\", \"target\": \"act\"}, {\"id\": \"e3\", \"source\": \"act\", \"target\": \"head\"}, {\"id\": \"e4\", \"source\": \"head\", \"target\": \"out\", \"targetHandle\": \"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "a-opt",
+      "type": "Optimizer",
+      "position": {
+        "x": 2529,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "type": "Adam",
+          "lr": 0.01
+        }
+      }
+    },
+    {
+      "id": "a-loss",
+      "type": "Loss",
+      "position": {
+        "x": 2529,
+        "y": 260
+      },
+      "data": {
+        "params": {
+          "type": "CrossEntropyLoss"
+        }
+      }
+    },
+    {
+      "id": "a-train",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 2889,
+        "y": -260
+      },
+      "data": {
+        "params": {
+          "epochs": 10,
+          "device": "cpu"
+        }
+      }
+    },
+    {
+      "id": "new-head",
+      "type": "PythonScript",
+      "position": {
+        "x": 3249,
+        "y": 312
+      },
+      "data": {
+        "params": {
+          "code": "def run(inputs, params):\n    # The pretrained model keeps its backbone weights; the head starts again\n    # from random weights, because it answered \"which of 0-4\" and the new\n    # task is \"which of 5-9\".\n    model = inputs[\"in1\"]\n    model.layers[\"head\"].reset_parameters()\n    return {\"out1\": model}\n",
+          "input_ports": 1,
+          "output_ports": 1,
+          "input_types": "MODEL",
+          "output_types": "MODEL"
+        }
+      }
+    },
+    {
+      "id": "freeze",
+      "type": "FreezeParameters",
+      "position": {
+        "x": 3962,
+        "y": 312
+      },
+      "data": {
+        "params": {
+          "mode": "freeze",
+          "match": "layers.head.",
+          "invert": true
+        }
+      }
+    },
+    {
+      "id": "freeze-report",
+      "type": "Print",
+      "position": {
+        "x": 3962,
+        "y": 676
+      },
+      "data": {
+        "params": {
+          "label": "frozen"
+        }
+      }
+    },
+    {
+      "id": "b-opt",
+      "type": "Optimizer",
+      "position": {
+        "x": 4322,
+        "y": 624
+      },
+      "data": {
+        "params": {
+          "type": "Adam",
+          "lr": 0.01
+        }
+      }
+    },
+    {
+      "id": "b-loss",
+      "type": "Loss",
+      "position": {
+        "x": 4322,
+        "y": 936
+      },
+      "data": {
+        "params": {
+          "type": "CrossEntropyLoss"
+        }
+      }
+    },
+    {
+      "id": "b-train",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 4682,
+        "y": 312
+      },
+      "data": {
+        "params": {
+          "epochs": 30,
+          "device": "cpu"
+        }
+      }
+    },
+    {
+      "id": "b-eval",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 5042,
+        "y": 312
+      },
+      "data": {
+        "params": {
+          "device": "cpu"
+        }
+      }
+    },
+    {
+      "id": "s-model",
+      "type": "SequentialModel",
+      "position": {
+        "x": 3962,
+        "y": 1300
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\": 2, \"nodes\": [{\"id\": \"in\", \"type\": \"Input\", \"ports\": [{\"id\": \"p_x\", \"name\": \"x\"}]}, {\"id\": \"backbone\", \"type\": \"Linear\", \"params\": {\"in_features\": 64, \"out_features\": 256}}, {\"id\": \"act\", \"type\": \"ReLU\"}, {\"id\": \"head\", \"type\": \"Linear\", \"params\": {\"in_features\": 256, \"out_features\": 5}}, {\"id\": \"out\", \"type\": \"Output\", \"ports\": [{\"id\": \"p_y\", \"name\": \"y\"}]}], \"edges\": [{\"id\": \"e1\", \"source\": \"in\", \"sourceHandle\": \"p_x\", \"target\": \"backbone\"}, {\"id\": \"e2\", \"source\": \"backbone\", \"target\": \"act\"}, {\"id\": \"e3\", \"source\": \"act\", \"target\": \"head\"}, {\"id\": \"e4\", \"source\": \"head\", \"target\": \"out\", \"targetHandle\": \"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "s-opt",
+      "type": "Optimizer",
+      "position": {
+        "x": 3962,
+        "y": 1560
+      },
+      "data": {
+        "params": {
+          "type": "Adam",
+          "lr": 0.01
+        }
+      }
+    },
+    {
+      "id": "s-loss",
+      "type": "Loss",
+      "position": {
+        "x": 3962,
+        "y": 1820
+      },
+      "data": {
+        "params": {
+          "type": "CrossEntropyLoss"
+        }
+      }
+    },
+    {
+      "id": "s-train",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 4322,
+        "y": 1300
+      },
+      "data": {
+        "params": {
+          "epochs": 30,
+          "device": "cpu"
+        }
+      }
+    },
+    {
+      "id": "s-eval",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 4682,
+        "y": 1300
+      },
+      "data": {
+        "params": {
+          "device": "cpu"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -460,
+        "y": 0
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Transfer learning in three steps, with the check that decides whether it paid off. 1) Pretrain on a task with plenty of data: digits 0 to 4. 2) Keep that backbone and give the model a new head. 3) Freeze the backbone with FreezeParameters and train only the head on the new task, digits 5 to 9, from 10 labelled images per digit. Below it, the same model trains from scratch on the same 50 images. On the held-out images of 5 to 9 the frozen backbone scores 0.871 and the baseline 0.946: here transfer loses. Features trained to tell 0 to 4 apart are not the ones that separate 5 to 9, and 8x8 digits are easy enough to learn from 50 images.\n\n三個步驟完成遷移學習，加上判斷它值不值得的檢查。1) 在資料充足的任務上預訓練：數字 0 到 4。2) 保留骨幹，換一個新的分類頭。3) 用 FreezeParameters 凍結骨幹，只在新任務上訓練分類頭：數字 5 到 9，每個數字只有 10 張標註影像。下方是同一個模型只用這 50 張從頭訓練。在 5 到 9 保留的影像上，凍結骨幹得到 0.871，基準線得到 0.946：這裡遷移輸了。為了分辨 0 到 4 而學到的特徵，不是分開 5 到 9 所需要的；而 8x8 的數字簡單到 50 張就學得會。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -460,
+          "y": 0
+        },
+        "noteWidth": 400
+      }
+    },
+    {
+      "id": "note-baseline",
+      "type": "note",
+      "position": {
+        "x": 3962,
+        "y": 905
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Keep this baseline next to every transfer run. Transfer pays off when the pretraining data is far larger than the new task's and covers what the new task needs, as with an ImageNet backbone on new photo classes. To try that here, pretrain on all ten digits and use the frozen backbone for a new label on the same images, such as odd or even.\n\n每次遷移都把這條基準線放在旁邊。預訓練資料遠多於新任務、而且涵蓋新任務需要的東西時，遷移才划算，例如用 ImageNet 的骨幹分類新的照片類別。想在這裡試試，就用全部十個數字預訓練，再用凍結的骨幹學同一批影像的新標籤，例如奇數或偶數。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "s-model",
+        "boundOffset": {
+          "x": 0,
+          "y": -395
+        },
+        "noteWidth": 340
+      }
+    },
+    {
+      "id": "note-freeze",
+      "type": "note",
+      "position": {
+        "x": 3962,
+        "y": -240
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "FreezeParameters picks parameters by name. A SequentialModel names them layers.<layer id>.weight and .bias, so the layer ids set in the architecture editor (backbone, head) are what match refers to: layers.head. with invert on freezes everything except the head. Its report says what is frozen: frozen: 2 tensors, 16,640 parameters; trainable: 2 tensors, 1,285 parameters. To fine-tune the whole model later, add a second FreezeParameters set to unfreeze with match left empty.\n\nFreezeParameters 依名稱挑參數。SequentialModel 的參數名稱是 layers.<層 id>.weight 與 .bias，所以 match 指的就是在架構編輯器裡設定的層 id（backbone、head）：match 填 layers.head. 並開啟 invert，就會凍結分類頭以外的一切。它的 report 說明凍結了什麼：frozen: 2 tensors, 16,640 parameters; trainable: 2 tensors, 1,285 parameters。之後要微調整個模型，再加一個 FreezeParameters，設為 unfreeze、match 留空即可。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "freeze",
+        "boundOffset": {
+          "x": 0,
+          "y": -552
+        },
+        "noteWidth": 340
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t1",
+      "source": "start",
+      "target": "csv",
+      "sourceHandle": "trigger",
+      "targetHandle": "__trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e2",
+      "source": "csv",
+      "target": "scale",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor",
+      "type": "data"
+    },
+    {
+      "id": "e3",
+      "source": "scale",
+      "target": "tasks",
+      "sourceHandle": "tensor",
+      "targetHandle": "in1",
+      "type": "data"
+    },
+    {
+      "id": "e4",
+      "source": "csv",
+      "target": "tasks",
+      "sourceHandle": "labels",
+      "targetHandle": "in2",
+      "type": "data"
+    },
+    {
+      "id": "e5",
+      "source": "tasks",
+      "target": "ds-a",
+      "sourceHandle": "out1",
+      "targetHandle": "features",
+      "type": "data"
+    },
+    {
+      "id": "e6",
+      "source": "tasks",
+      "target": "ds-a",
+      "sourceHandle": "out2",
+      "targetHandle": "targets",
+      "type": "data"
+    },
+    {
+      "id": "e7",
+      "source": "tasks",
+      "target": "ds-b",
+      "sourceHandle": "out3",
+      "targetHandle": "features",
+      "type": "data"
+    },
+    {
+      "id": "e8",
+      "source": "tasks",
+      "target": "ds-b",
+      "sourceHandle": "out4",
+      "targetHandle": "targets",
+      "type": "data"
+    },
+    {
+      "id": "e9",
+      "source": "tasks",
+      "target": "ds-b-test",
+      "sourceHandle": "out5",
+      "targetHandle": "features",
+      "type": "data"
+    },
+    {
+      "id": "e10",
+      "source": "tasks",
+      "target": "ds-b-test",
+      "sourceHandle": "out6",
+      "targetHandle": "targets",
+      "type": "data"
+    },
+    {
+      "id": "e11",
+      "source": "ds-a",
+      "target": "dl-a",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset",
+      "type": "data"
+    },
+    {
+      "id": "e12",
+      "source": "ds-b",
+      "target": "dl-b",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset",
+      "type": "data"
+    },
+    {
+      "id": "e13",
+      "source": "a-model",
+      "target": "a-opt",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e14",
+      "source": "a-model",
+      "target": "a-train",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e15",
+      "source": "dl-a",
+      "target": "a-train",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader",
+      "type": "data"
+    },
+    {
+      "id": "e16",
+      "source": "a-opt",
+      "target": "a-train",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer",
+      "type": "data"
+    },
+    {
+      "id": "e17",
+      "source": "a-loss",
+      "target": "a-train",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn",
+      "type": "data"
+    },
+    {
+      "id": "e18",
+      "source": "a-train",
+      "target": "new-head",
+      "sourceHandle": "model",
+      "targetHandle": "in1",
+      "type": "data"
+    },
+    {
+      "id": "e19",
+      "source": "new-head",
+      "target": "freeze",
+      "sourceHandle": "out1",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e20",
+      "source": "freeze",
+      "target": "freeze-report",
+      "sourceHandle": "report",
+      "targetHandle": "value",
+      "type": "data"
+    },
+    {
+      "id": "e21",
+      "source": "freeze",
+      "target": "b-opt",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e22",
+      "source": "freeze",
+      "target": "b-train",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e23",
+      "source": "dl-b",
+      "target": "b-train",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader",
+      "type": "data"
+    },
+    {
+      "id": "e24",
+      "source": "b-opt",
+      "target": "b-train",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer",
+      "type": "data"
+    },
+    {
+      "id": "e25",
+      "source": "b-loss",
+      "target": "b-train",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn",
+      "type": "data"
+    },
+    {
+      "id": "e26",
+      "source": "b-train",
+      "target": "b-eval",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e27",
+      "source": "ds-b-test",
+      "target": "b-eval",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset",
+      "type": "data"
+    },
+    {
+      "id": "e28",
+      "source": "s-model",
+      "target": "s-opt",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e29",
+      "source": "s-model",
+      "target": "s-train",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e30",
+      "source": "dl-b",
+      "target": "s-train",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader",
+      "type": "data"
+    },
+    {
+      "id": "e31",
+      "source": "s-opt",
+      "target": "s-train",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer",
+      "type": "data"
+    },
+    {
+      "id": "e32",
+      "source": "s-loss",
+      "target": "s-train",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn",
+      "type": "data"
+    },
+    {
+      "id": "e33",
+      "source": "s-train",
+      "target": "s-eval",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e34",
+      "source": "ds-b-test",
+      "target": "s-eval",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset",
+      "type": "data"
+    }
+  ]
+}

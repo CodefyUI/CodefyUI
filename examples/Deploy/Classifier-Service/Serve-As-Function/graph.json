@@ -1,0 +1,255 @@
+{
+  "name": "Serve a classifier over HTTP",
+  "description": "Load the weights, answer over HTTP",
+  "gallery": {
+    "main_tag": "deploy",
+    "tags": [
+      "tabular",
+      "iris",
+      "api",
+      "inference"
+    ],
+    "order": 20
+  },
+  "settings": {
+    "seed": 0
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "input",
+      "type": "GraphInput",
+      "position": {
+        "x": 360,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "name": "measurements",
+          "type": "json",
+          "required": false,
+          "default": "[6.1, 2.8, 4.7, 1.2]",
+          "description": "Sepal length, sepal width, petal length, petal width in cm"
+        }
+      }
+    },
+    {
+      "id": "to-tensor",
+      "type": "PythonScript",
+      "position": {
+        "x": 720,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "code": "import torch\n\ndef run(inputs, params):\n    # One flower: [sepal length, sepal width, petal length, petal width] in cm.\n    values = inputs[\"in1\"]\n    if not isinstance(values, list) or len(values) != 4:\n        raise ValueError(\"measurements must be a list of 4 numbers: \"\n                         \"sepal length, sepal width, petal length, petal width (cm)\")\n    return {\"out1\": torch.tensor([values], dtype=torch.float32)}\n",
+          "input_ports": 1,
+          "output_ports": 1,
+          "input_types": "ANY",
+          "output_types": "TENSOR"
+        }
+      }
+    },
+    {
+      "id": "model",
+      "type": "SequentialModel",
+      "position": {
+        "x": 360,
+        "y": 364
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\": 2, \"nodes\": [{\"id\": \"in\", \"type\": \"Input\", \"ports\": [{\"id\": \"p_x\", \"name\": \"x\"}]}, {\"id\": \"l0\", \"type\": \"Linear\", \"params\": {\"in_features\": 4, \"out_features\": 16}}, {\"id\": \"r0\", \"type\": \"ReLU\"}, {\"id\": \"l1\", \"type\": \"Linear\", \"params\": {\"in_features\": 16, \"out_features\": 3}}, {\"id\": \"out\", \"type\": \"Output\", \"ports\": [{\"id\": \"p_y\", \"name\": \"y\"}]}], \"edges\": [{\"id\": \"e1\", \"source\": \"in\", \"target\": \"l0\", \"sourceHandle\": \"p_x\"}, {\"id\": \"e2\", \"source\": \"l0\", \"target\": \"r0\"}, {\"id\": \"e3\", \"source\": \"r0\", \"target\": \"l1\"}, {\"id\": \"e4\", \"source\": \"l1\", \"target\": \"out\", \"targetHandle\": \"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "load",
+      "type": "ModelLoader",
+      "position": {
+        "x": 720,
+        "y": 367
+      },
+      "data": {
+        "params": {
+          "path": "iris-classifier.safetensors",
+          "load_mode": "state_dict",
+          "device": "cpu",
+          "strict": true
+        }
+      }
+    },
+    {
+      "id": "infer",
+      "type": "Inference",
+      "position": {
+        "x": 1457,
+        "y": 182
+      },
+      "data": {
+        "params": {
+          "device": "cpu"
+        }
+      }
+    },
+    {
+      "id": "label",
+      "type": "PythonScript",
+      "position": {
+        "x": 1817,
+        "y": 182
+      },
+      "data": {
+        "params": {
+          "code": "import torch\n\ndef run(inputs, params):\n    # The class order TensorDataset gave the training labels (sorted names).\n    species = [\"setosa\", \"versicolor\", \"virginica\"]\n    probs = torch.softmax(inputs[\"in1\"][0], dim=0).tolist()\n    best = max(range(3), key=lambda i: probs[i])\n    return {\"out1\": species[best], \"out2\": {s: round(p, 4) for s, p in zip(species, probs)}}\n",
+          "input_ports": 1,
+          "output_ports": 2,
+          "input_types": "TENSOR",
+          "output_types": "STRING,ANY"
+        }
+      }
+    },
+    {
+      "id": "out-species",
+      "type": "GraphOutput",
+      "position": {
+        "x": 2530,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "name": "species",
+          "description": "The predicted iris species"
+        }
+      }
+    },
+    {
+      "id": "out-probs",
+      "type": "GraphOutput",
+      "position": {
+        "x": 2530,
+        "y": 364
+      },
+      "data": {
+        "params": {
+          "name": "probabilities",
+          "description": "Probability of each species"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -460,
+        "y": 0
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Run Train-And-Export first: this graph loads the iris-classifier.safetensors it writes. Without that file, ModelLoader stops with \"Weights file not found:\" and the full path it looked in. GraphInput and GraphOutput make the graph a function: Run on the canvas uses the default measurements and answers versicolor (setosa 0.001, versicolor 0.957, virginica 0.043). Save the graph, and POST /api/graph/run/<saved name> with {\"inputs\": {\"measurements\": [5.1, 3.5, 1.4, 0.2]}} returns species and probabilities as JSON.\n\n先執行 Train-And-Export：這張圖載入它寫出的 iris-classifier.safetensors。沒有那個檔案時，ModelLoader 會停下並顯示 \"Weights file not found:\" 與它找的完整路徑。GraphInput 與 GraphOutput 讓這張圖成為函式：在畫布上執行會用預設的測量值，回答 versicolor（setosa 0.001, versicolor 0.957, virginica 0.043）。存檔之後，對 POST /api/graph/run/<存檔名稱> 送出 {\"inputs\": {\"measurements\": [5.1, 3.5, 1.4, 0.2]}}，就會以 JSON 回傳 species 與 probabilities。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -460,
+          "y": 0
+        },
+        "noteWidth": 400
+      }
+    },
+    {
+      "id": "note-publish",
+      "type": "note",
+      "position": {
+        "x": 2530,
+        "y": 664
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "That endpoint always runs the latest save. For a stable version behind an API key, publish the graph (docs: Publish, graphs as apps).\n\n那個端點永遠執行最新的存檔。要有固定版本並以 API key 保護，就發佈這張圖（文件：Publish，把圖發佈成 app）。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "out-probs",
+        "boundOffset": {
+          "x": 0,
+          "y": 300
+        },
+        "noteWidth": 320
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t1",
+      "source": "start",
+      "target": "input",
+      "sourceHandle": "trigger",
+      "targetHandle": "__trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e2",
+      "source": "input",
+      "target": "to-tensor",
+      "sourceHandle": "value",
+      "targetHandle": "in1",
+      "type": "data"
+    },
+    {
+      "id": "e3",
+      "source": "model",
+      "target": "load",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e4",
+      "source": "load",
+      "target": "infer",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e5",
+      "source": "to-tensor",
+      "target": "infer",
+      "sourceHandle": "out1",
+      "targetHandle": "input",
+      "type": "data"
+    },
+    {
+      "id": "e6",
+      "source": "infer",
+      "target": "label",
+      "sourceHandle": "output",
+      "targetHandle": "in1",
+      "type": "data"
+    },
+    {
+      "id": "e7",
+      "source": "label",
+      "target": "out-species",
+      "sourceHandle": "out1",
+      "targetHandle": "value",
+      "type": "data"
+    },
+    {
+      "id": "e8",
+      "source": "label",
+      "target": "out-probs",
+      "sourceHandle": "out2",
+      "targetHandle": "value",
+      "type": "data"
+    }
+  ]
+}

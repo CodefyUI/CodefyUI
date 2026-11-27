@@ -1,0 +1,240 @@
+{
+  "name": "Measure retrieval hit rate",
+  "description": "Hit@1 and hit@3 of a RAG retriever",
+  "gallery": {
+    "main_tag": "llm",
+    "tags": [
+      "nlp",
+      "rag",
+      "retrieval",
+      "metrics"
+    ],
+    "order": 40
+  },
+  "settings": {
+    "seed": 0
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "docs",
+      "type": "DocumentLoader",
+      "position": {
+        "x": 360,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "source": "directory",
+          "directory": "data/samples/rag"
+        }
+      }
+    },
+    {
+      "id": "chunk",
+      "type": "TextChunker",
+      "position": {
+        "x": 720,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "strategy": "characters",
+          "chunk_size": 400,
+          "chunk_overlap": 80,
+          "min_chunk_chars": 40
+        }
+      }
+    },
+    {
+      "id": "bow",
+      "type": "PythonScript",
+      "position": {
+        "x": 1080,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "code": "import math\nimport re\nimport torch\n\nQUESTIONS = [\n    (\"What is a node and what does a typed edge carry?\", \"01-what-is-codefyui.md\"),\n    (\"Who is CodefyUI built for: students, teachers or teams?\", \"01-what-is-codefyui.md\"),\n    (\"Which side of a node are the input ports on?\", \"02-nodes-and-edges.md\"),\n    (\"How do I look at the shape and dtype of a tensor after a run?\", \"02-nodes-and-edges.md\"),\n    (\"What does the loss curve look like when the learning rate is too high?\", \"03-training-basics.md\"),\n    (\"How is cosine similarity between two vectors measured?\", \"04-embeddings-and-rag.md\"),\n    (\"Which pack restarts the server when it is installed?\", \"05-optional-packs.md\"),\n    # The last three are paraphrased: few of their words appear in the answer.\n    (\"Will pressing Run ever pull a big download onto my laptop?\", \"05-optional-packs.md\"),\n    (\"My model memorises its examples and gets worse on new ones; what is that?\", \"03-training-basics.md\"),\n    (\"How can two sentences with no common vocabulary end up close together?\", \"04-embeddings-and-rag.md\"),\n]\nSTOP = set(\"a an and are as at be by do does for from how i in is it of on or the to what when where which who why with\".split())\n\ndef words(text):\n    return [w for w in re.findall(r\"[a-z]+\", text.lower()) if w not in STOP]\n\ndef run(inputs, params):\n    # Bag of words weighted by IDF: each chunk and each question becomes a\n    # vector of word weights over the chunks' vocabulary.\n    chunks = list(inputs[\"in1\"])\n    sources = [m[\"source\"] for m in inputs[\"in2\"]]\n    docs = [words(c) for c in chunks]\n    vocab = sorted({w for d in docs for w in d})\n    index = {w: i for i, w in enumerate(vocab)}\n    df = torch.zeros(len(vocab))\n    for d in docs:\n        for w in set(d):\n            df[index[w]] += 1\n    idf = torch.log((1 + len(docs)) / (1 + df)) + 1\n\n    def vector(tokens):\n        v = torch.zeros(len(vocab))\n        for w in tokens:\n            if w in index:\n                v[index[w]] += 1\n        return v * idf\n\n    keys = torch.stack([vector(d) for d in docs])\n    queries = torch.stack([vector(words(q)) for q, _ in QUESTIONS])\n    expected = [src for _, src in QUESTIONS]\n    return {\"out1\": queries, \"out2\": keys, \"out3\": sources, \"out4\": expected}\n",
+          "input_ports": 2,
+          "output_ports": 4,
+          "input_types": "LIST,LIST",
+          "output_types": "TENSOR,TENSOR,LIST,LIST"
+        }
+      }
+    },
+    {
+      "id": "retrieve",
+      "type": "CosineSimilarity",
+      "position": {
+        "x": 1440,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "top_k": 3
+        }
+      }
+    },
+    {
+      "id": "score",
+      "type": "PythonScript",
+      "position": {
+        "x": 1800,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "code": "def run(inputs, params):\n    # A question is a hit@k when its source document is among the top k chunks.\n    top = inputs[\"in1\"]\n    expected = list(inputs[\"in2\"])\n    hit1 = sum(row[0] == want for row, want in zip(top, expected))\n    hit3 = sum(want in list(row)[:3] for row, want in zip(top, expected))\n    report = f\"hit@1 {hit1}/{len(expected)}, hit@3 {hit3}/{len(expected)}\"\n    for k in (1, 3):\n        missed = [str(i + 1) for i, (row, want) in enumerate(zip(top, expected)) if want not in list(row)[:k]]\n        if missed:\n            report += f\"; missed at {k}: question \" + \", \".join(missed)\n    return {\"out1\": hit1 / len(expected), \"out2\": hit3 / len(expected), \"out3\": report}\n",
+          "input_ports": 2,
+          "output_ports": 3,
+          "input_types": "LIST,LIST",
+          "output_types": "SCALAR,SCALAR,STRING"
+        }
+      }
+    },
+    {
+      "id": "report",
+      "type": "Print",
+      "position": {
+        "x": 2537,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "label": "retrieval"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -460,
+        "y": 0
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Before judging a RAG answer, measure the retriever on its own. Ten questions about the five bundled notes (data/samples/rag), each with the file that answers it; the last three are paraphrased, so they share few words with their answer. The notes are cut into 41 chunks, every question retrieves its 3 closest chunks, and a question is a hit@k when a chunk from the right file is among the top k. Here: hit@1 9/10, hit@3 10/10; missed at 1: question 8. Change one thing, such as the chunk size, and run it again: the score says whether retrieval got better.\n\n評斷 RAG 的回答之前，先單獨量檢索器。對五份內建筆記（data/samples/rag）問十個問題，每題都標好答案在哪個檔案；最後三題是換句話說的問法，和答案共同的字詞很少。筆記切成 41 塊，每個問題取最接近的 3 塊；正確檔案的塊出現在前 k 名，就算 hit@k。結果：hit@1 9/10, hit@3 10/10; missed at 1: question 8。改一個地方（例如塊的大小）再跑一次，分數會告訴你檢索有沒有變好。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -460,
+          "y": 0
+        },
+        "noteWidth": 400
+      }
+    },
+    {
+      "id": "note-bow",
+      "type": "note",
+      "position": {
+        "x": 1080,
+        "y": -462
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The vectors here are bag of words: a question only finds chunks that share its words, so this is not semantic retrieval. A question worded differently from its answer is missed. With the Sentence embeddings pack installed, replace this script with two TextEmbedding nodes (prefix \"query: \" for the questions, \"passage: \" for the chunks, as in RAG-Local-Offline); paraphrased questions should then score higher, and only measuring tells you by how much.\n\n這裡的向量是 bag of words：問題只找得到和它有共同字詞的塊，所以這不是語意檢索。問法和答案用字不同的問題就會錯過。安裝 Sentence embeddings 套件包後，把這個腳本換成兩個 TextEmbedding 節點（問題用 \"query: \" 前綴、塊用 \"passage: \"，和 RAG-Local-Offline 一樣）；換句話說的問題應該會得分更高，高多少要量了才知道。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "bow",
+        "boundOffset": {
+          "x": 0,
+          "y": -462
+        },
+        "noteWidth": 360
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t1",
+      "source": "start",
+      "target": "docs",
+      "sourceHandle": "trigger",
+      "targetHandle": "__trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e2",
+      "source": "docs",
+      "target": "chunk",
+      "sourceHandle": "documents",
+      "targetHandle": "documents",
+      "type": "data"
+    },
+    {
+      "id": "e3",
+      "source": "chunk",
+      "target": "bow",
+      "sourceHandle": "chunks",
+      "targetHandle": "in1",
+      "type": "data"
+    },
+    {
+      "id": "e4",
+      "source": "chunk",
+      "target": "bow",
+      "sourceHandle": "metadata",
+      "targetHandle": "in2",
+      "type": "data"
+    },
+    {
+      "id": "e5",
+      "source": "bow",
+      "target": "retrieve",
+      "sourceHandle": "out1",
+      "targetHandle": "queries",
+      "type": "data"
+    },
+    {
+      "id": "e6",
+      "source": "bow",
+      "target": "retrieve",
+      "sourceHandle": "out2",
+      "targetHandle": "keys",
+      "type": "data"
+    },
+    {
+      "id": "e7",
+      "source": "bow",
+      "target": "retrieve",
+      "sourceHandle": "out3",
+      "targetHandle": "key_labels",
+      "type": "data"
+    },
+    {
+      "id": "e8",
+      "source": "retrieve",
+      "target": "score",
+      "sourceHandle": "top_k_labels",
+      "targetHandle": "in1",
+      "type": "data"
+    },
+    {
+      "id": "e9",
+      "source": "bow",
+      "target": "score",
+      "sourceHandle": "out4",
+      "targetHandle": "in2",
+      "type": "data"
+    },
+    {
+      "id": "e10",
+      "source": "score",
+      "target": "report",
+      "sourceHandle": "out3",
+      "targetHandle": "value",
+      "type": "data"
+    }
+  ]
+}

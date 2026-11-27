@@ -41,6 +41,7 @@ import json
 import os
 import random
 import re
+import time
 from pathlib import Path
 
 import pytest
@@ -113,7 +114,70 @@ _SLOW_NODE_TYPES = {
 
 
 def _is_slow(payload: dict) -> bool:
-    return any(n.get("type") in _SLOW_NODE_TYPES for n in payload.get("nodes", []))
+    """Whether the graph, or a block it defines, uses a slow node.
+
+    Block definitions count: training wrapped in a block is still training.
+    """
+    nodes = list(payload.get("nodes", []))
+    for definition in payload.get("subgraphs") or []:
+        nodes.extend(definition.get("nodes", []))
+    return any(n.get("type") in _SLOW_NODE_TYPES for n in nodes)
+
+
+#: Examples that use a node from ``_SLOW_NODE_TYPES`` but are small enough to
+#: run here anyway: the practical recipes that train (Phase 3), each a few
+#: seconds on a laptop CPU on bundled data, with nothing to download. (The
+#: three that do not train run as ordinary fast graphs.) They run under the
+#: seed their file stores and with a temporary models directory, so a
+#: checkpoint one writes never lands in the real one. The value lists the
+#: examples that must run first in the same models directory: Serve loads the
+#: weights Train-And-Export writes. test_practical_examples.py checks the
+#: numbers their notes quote.
+_RUN_ANYWAY: dict[str, tuple[str, ...]] = {
+    "Training/Early-Stopping-Best-Checkpoint": (),
+    "Training/Transfer-Frozen-Backbone": (),
+    "Evaluation/Multi-Seed-Mean-Std": (),
+    "Evaluation/Checkpoint-Confusion-Matrix": (),
+    "Evaluation/Compare-Two-Checkpoints": (),
+    "Evaluation/Embedding-Projection-2D": (),
+    "Research/LR-Range-Test": (),
+    "Research/LR-BatchSize-Grid": (),
+    "Research/Ablation-Input-Standardization": (),
+    "Deploy/Classifier-Service/Train-And-Export": (),
+    "Deploy/Classifier-Service/Serve-As-Function": ("Deploy/Classifier-Service/Train-And-Export",),
+    "LLM/Finetune-Char-LM-Custom-Text": (),
+}
+
+#: The Phase 3 budget for one practical example on a CPU. They take one to
+#: three seconds on a laptop; the ceiling only catches one that grew by an
+#: order of magnitude.
+_RUN_ANYWAY_SECONDS = 20.0
+
+
+def _example_key(graph_path: Path) -> str:
+    return graph_path.parent.relative_to(_EXAMPLES_ROOT).as_posix()
+
+
+def _run_seeded(key: str) -> None:
+    """Execute one example the way the canvas runs it: under its own seed."""
+    from app.core.execution_context import ExecutionContext
+
+    payload = json.loads((_EXAMPLES_ROOT / key / "graph.json").read_text(encoding="utf-8"))
+    seed = payload.get("settings", {}).get("seed")
+    asyncio.run(execute_graph(
+        payload["nodes"], payload["edges"], error_mode="fail_fast",
+        subgraphs=payload.get("subgraphs"),
+        context=ExecutionContext(device="cpu", seed=seed)))
+
+
+def test_every_run_anyway_entry_is_a_shipped_example_that_needs_it():
+    for key, before in _RUN_ANYWAY.items():
+        path = _EXAMPLES_ROOT / key / "graph.json"
+        assert path.is_file(), f"_RUN_ANYWAY lists {key}, which does not exist"
+        assert _is_slow(json.loads(path.read_text(encoding="utf-8"))), (
+            f"{key} uses no slow node; it runs without being listed")
+        for prerequisite in before:
+            assert prerequisite in _RUN_ANYWAY, prerequisite
 
 
 @pytest.mark.parametrize(
@@ -121,13 +185,36 @@ def _is_slow(payload: dict) -> bool:
     _GRAPHS,
     ids=[p.relative_to(_EXAMPLES_ROOT).as_posix() for p in _GRAPHS],
 )
-def test_builtin_graph_executes(graph_path: Path):
+def test_builtin_graph_executes(graph_path: Path, tmp_path: Path, monkeypatch):
     payload = json.loads(graph_path.read_text(encoding="utf-8"))
     nodes = payload["nodes"]
     edges = payload["edges"]
+    # An example may carry its own block definitions.
+    subgraphs = payload.get("subgraphs")
 
-    errors = validate_graph(nodes, edges)
+    errors = validate_graph(nodes, edges, subgraphs=subgraphs)
     assert not errors, f"validate_graph errors for {graph_path}: {errors}"
+
+    key = _example_key(graph_path)
+    if key in _RUN_ANYWAY:
+        from app.config import settings
+
+        monkeypatch.setattr(settings, "MODELS_DIR", tmp_path / "models")
+        backend_dir = Path(__file__).resolve().parents[1]
+        prev_cwd = Path.cwd()
+        os.chdir(backend_dir)
+        try:
+            for prerequisite in _RUN_ANYWAY[key]:
+                _run_seeded(prerequisite)
+            started = time.perf_counter()
+            _run_seeded(key)
+            seconds = time.perf_counter() - started
+        finally:
+            os.chdir(prev_cwd)
+        assert seconds < _RUN_ANYWAY_SECONDS, (
+            f"{key} took {seconds:.1f}s; a practical example has to stay under "
+            f"{_RUN_ANYWAY_SECONDS:.0f}s on a CPU -- shrink its data or epochs")
+        return
 
     if _is_slow(payload):
         pytest.skip(
@@ -145,7 +232,7 @@ def test_builtin_graph_executes(graph_path: Path):
     prev_cwd = Path.cwd()
     os.chdir(backend_dir)
     try:
-        asyncio.run(execute_graph(nodes, edges, error_mode="fail_fast"))
+        asyncio.run(execute_graph(nodes, edges, error_mode="fail_fast", subgraphs=subgraphs))
     finally:
         os.chdir(prev_cwd)
 

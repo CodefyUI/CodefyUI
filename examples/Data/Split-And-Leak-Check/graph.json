@@ -1,0 +1,395 @@
+{
+  "name": "Split and check for leaks",
+  "description": "Train/val/test split, then a leak check",
+  "gallery": {
+    "main_tag": "data",
+    "tags": [
+      "tabular",
+      "iris",
+      "split",
+      "leakage"
+    ],
+    "order": 20
+  },
+  "settings": {
+    "seed": 0
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "csv",
+      "type": "CSVReader",
+      "position": {
+        "x": 360,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "path": "data/samples/iris.csv",
+          "target_column": "species",
+          "target_type": "class"
+        }
+      }
+    },
+    {
+      "id": "split-before",
+      "type": "TrainTestSplit",
+      "position": {
+        "x": 1377,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "test_size": 0.2,
+          "seed": 0,
+          "stratify": true
+        }
+      }
+    },
+    {
+      "id": "split-val-before",
+      "type": "TrainTestSplit",
+      "position": {
+        "x": 1737,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "test_size": 0.25,
+          "seed": 0,
+          "stratify": true
+        }
+      }
+    },
+    {
+      "id": "leak-before",
+      "type": "PythonScript",
+      "position": {
+        "x": 2097,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "code": "import torch\n\ndef run(inputs, params):\n    # How many evaluation rows also appear, value for value, in the training\n    # split. A model can score those by memory alone.\n    train = {tuple(row) for row in inputs[\"in1\"].tolist()}\n    val_hits = sum(tuple(row) in train for row in inputs[\"in2\"].tolist())\n    test_hits = sum(tuple(row) in train for row in inputs[\"in3\"].tolist())\n    return {\"out1\": f\"{val_hits} of {len(inputs['in2'])} validation rows and {test_hits} of \"\n                    f\"{len(inputs['in3'])} test rows also appear in the training split\"}\n",
+          "input_ports": 3,
+          "output_ports": 1,
+          "input_types": "TENSOR,TENSOR,TENSOR",
+          "output_types": "STRING"
+        }
+      }
+    },
+    {
+      "id": "print-before",
+      "type": "Print",
+      "position": {
+        "x": 2810,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "label": "leak check, before removing repeats"
+        }
+      }
+    },
+    {
+      "id": "dedup",
+      "type": "PythonScript",
+      "position": {
+        "x": 720,
+        "y": 624
+      },
+      "data": {
+        "params": {
+          "code": "import torch\n\ndef run(inputs, params):\n    # Keep the first copy of every repeated row (features and label).\n    x = inputs[\"in1\"]\n    labels = list(inputs[\"in2\"])\n    seen, keep = set(), []\n    for i, row in enumerate(x.tolist()):\n        key = (tuple(row), labels[i])\n        if key not in seen:\n            seen.add(key)\n            keep.append(i)\n    dropped = len(labels) - len(keep)\n    return {\"out1\": x[keep], \"out2\": [labels[i] for i in keep],\n            \"out3\": f\"{len(labels)} rows, {dropped} exact repeat{'' if dropped == 1 else 's'} removed, \"\n                    f\"{len(keep)} left\"}\n",
+          "input_ports": 2,
+          "output_ports": 3,
+          "input_types": "TENSOR,LIST",
+          "output_types": "TENSOR,LIST,STRING"
+        }
+      }
+    },
+    {
+      "id": "dedup-report",
+      "type": "Print",
+      "position": {
+        "x": 720,
+        "y": 1094
+      },
+      "data": {
+        "params": {
+          "label": "duplicates"
+        }
+      }
+    },
+    {
+      "id": "split-after",
+      "type": "TrainTestSplit",
+      "position": {
+        "x": 1377,
+        "y": 624
+      },
+      "data": {
+        "params": {
+          "test_size": 0.2,
+          "seed": 0,
+          "stratify": true
+        }
+      }
+    },
+    {
+      "id": "split-val-after",
+      "type": "TrainTestSplit",
+      "position": {
+        "x": 1737,
+        "y": 624
+      },
+      "data": {
+        "params": {
+          "test_size": 0.25,
+          "seed": 0,
+          "stratify": true
+        }
+      }
+    },
+    {
+      "id": "leak-after",
+      "type": "PythonScript",
+      "position": {
+        "x": 2097,
+        "y": 624
+      },
+      "data": {
+        "params": {
+          "code": "import torch\n\ndef run(inputs, params):\n    # How many evaluation rows also appear, value for value, in the training\n    # split. A model can score those by memory alone.\n    train = {tuple(row) for row in inputs[\"in1\"].tolist()}\n    val_hits = sum(tuple(row) in train for row in inputs[\"in2\"].tolist())\n    test_hits = sum(tuple(row) in train for row in inputs[\"in3\"].tolist())\n    return {\"out1\": f\"{val_hits} of {len(inputs['in2'])} validation rows and {test_hits} of \"\n                    f\"{len(inputs['in3'])} test rows also appear in the training split\"}\n",
+          "input_ports": 3,
+          "output_ports": 1,
+          "input_types": "TENSOR,TENSOR,TENSOR",
+          "output_types": "STRING"
+        }
+      }
+    },
+    {
+      "id": "print-after",
+      "type": "Print",
+      "position": {
+        "x": 2810,
+        "y": 624
+      },
+      "data": {
+        "params": {
+          "label": "leak check, after removing repeats"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -460,
+        "y": 0
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Three splits from one CSV: 20% test, then 25% of the rest as validation, both stratified so every species keeps its share. Then the check most pipelines skip: does any evaluation row also appear in training? Iris has a repeated row, and the top row finds 0 of 30 validation rows and 1 of 30 test rows also appear in the training split. Removing exact repeats before splitting (150 rows, 1 exact repeat removed, 149 left) brings it to 0 of 30 validation rows and 0 of 30 test rows also appear in the training split. A leaked row is scored from memory, so it makes validation and test accuracy look better than they are.\n\n從一個 CSV 切出三份：先切 20% 當測試資料，剩下的再切 25% 當驗證資料，兩次都分層抽樣，讓每個品種維持原本的比例。接著是多數流程會跳過的檢查：評估用的列有沒有也出現在訓練資料裡？iris 有一列重複，上面那一排找到 驗證資料 30 列中有 0 列、測試資料 30 列中有 1 列也出現在訓練資料裡。切分之前先移除完全重複的列（150 列，移除 1 列完全重複，剩下 149 列），結果變成 驗證資料 30 列中有 0 列、測試資料 30 列中有 0 列也出現在訓練資料裡。外洩的列靠記憶就能答對，會讓驗證與測試正確率看起來比實際好。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -460,
+          "y": 0
+        },
+        "noteWidth": 400
+      }
+    },
+    {
+      "id": "note-groups",
+      "type": "note",
+      "position": {
+        "x": 2097,
+        "y": 1061
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Exact repeats are the easy case. Near repeats leak too: several photos of the same object, or several rows from the same patient. Split by that group (object, patient, user) rather than by row.\n\n完全重複是簡單的情況。幾乎重複的也會外洩：同一個物體的好幾張照片、同一位病人的好幾筆資料。這時要依群組（物體、病人、使用者）切分，而不是逐列切分。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "leak-after",
+        "boundOffset": {
+          "x": 0,
+          "y": 437
+        },
+        "noteWidth": 320
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t1",
+      "source": "start",
+      "target": "csv",
+      "sourceHandle": "trigger",
+      "targetHandle": "__trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e2",
+      "source": "csv",
+      "target": "split-before",
+      "sourceHandle": "tensor",
+      "targetHandle": "features",
+      "type": "data"
+    },
+    {
+      "id": "e3",
+      "source": "csv",
+      "target": "split-before",
+      "sourceHandle": "labels",
+      "targetHandle": "labels",
+      "type": "data"
+    },
+    {
+      "id": "e4",
+      "source": "split-before",
+      "target": "split-val-before",
+      "sourceHandle": "x_train",
+      "targetHandle": "features",
+      "type": "data"
+    },
+    {
+      "id": "e5",
+      "source": "split-before",
+      "target": "split-val-before",
+      "sourceHandle": "y_train",
+      "targetHandle": "labels",
+      "type": "data"
+    },
+    {
+      "id": "e6",
+      "source": "split-val-before",
+      "target": "leak-before",
+      "sourceHandle": "x_train",
+      "targetHandle": "in1",
+      "type": "data"
+    },
+    {
+      "id": "e7",
+      "source": "split-val-before",
+      "target": "leak-before",
+      "sourceHandle": "x_test",
+      "targetHandle": "in2",
+      "type": "data"
+    },
+    {
+      "id": "e8",
+      "source": "split-before",
+      "target": "leak-before",
+      "sourceHandle": "x_test",
+      "targetHandle": "in3",
+      "type": "data"
+    },
+    {
+      "id": "e9",
+      "source": "leak-before",
+      "target": "print-before",
+      "sourceHandle": "out1",
+      "targetHandle": "value",
+      "type": "data"
+    },
+    {
+      "id": "e10",
+      "source": "csv",
+      "target": "dedup",
+      "sourceHandle": "tensor",
+      "targetHandle": "in1",
+      "type": "data"
+    },
+    {
+      "id": "e11",
+      "source": "csv",
+      "target": "dedup",
+      "sourceHandle": "labels",
+      "targetHandle": "in2",
+      "type": "data"
+    },
+    {
+      "id": "e12",
+      "source": "dedup",
+      "target": "dedup-report",
+      "sourceHandle": "out3",
+      "targetHandle": "value",
+      "type": "data"
+    },
+    {
+      "id": "e13",
+      "source": "dedup",
+      "target": "split-after",
+      "sourceHandle": "out1",
+      "targetHandle": "features",
+      "type": "data"
+    },
+    {
+      "id": "e14",
+      "source": "dedup",
+      "target": "split-after",
+      "sourceHandle": "out2",
+      "targetHandle": "labels",
+      "type": "data"
+    },
+    {
+      "id": "e15",
+      "source": "split-after",
+      "target": "split-val-after",
+      "sourceHandle": "x_train",
+      "targetHandle": "features",
+      "type": "data"
+    },
+    {
+      "id": "e16",
+      "source": "split-after",
+      "target": "split-val-after",
+      "sourceHandle": "y_train",
+      "targetHandle": "labels",
+      "type": "data"
+    },
+    {
+      "id": "e17",
+      "source": "split-val-after",
+      "target": "leak-after",
+      "sourceHandle": "x_train",
+      "targetHandle": "in1",
+      "type": "data"
+    },
+    {
+      "id": "e18",
+      "source": "split-val-after",
+      "target": "leak-after",
+      "sourceHandle": "x_test",
+      "targetHandle": "in2",
+      "type": "data"
+    },
+    {
+      "id": "e19",
+      "source": "split-after",
+      "target": "leak-after",
+      "sourceHandle": "x_test",
+      "targetHandle": "in3",
+      "type": "data"
+    },
+    {
+      "id": "e20",
+      "source": "leak-after",
+      "target": "print-after",
+      "sourceHandle": "out1",
+      "targetHandle": "value",
+      "type": "data"
+    }
+  ]
+}

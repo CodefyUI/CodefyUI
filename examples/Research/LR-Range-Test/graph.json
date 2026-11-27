@@ -1,0 +1,579 @@
+{
+  "name": "Find a learning rate",
+  "description": "LR range test, then train with the pick",
+  "gallery": {
+    "main_tag": "research",
+    "tags": [
+      "tabular",
+      "iris",
+      "learning-rate",
+      "optimization"
+    ],
+    "order": 10
+  },
+  "settings": {
+    "seed": 0
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "csv",
+      "type": "CSVReader",
+      "position": {
+        "x": 360,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "path": "data/samples/iris.csv",
+          "target_column": "species",
+          "target_type": "class"
+        }
+      }
+    },
+    {
+      "id": "split",
+      "type": "TrainTestSplit",
+      "position": {
+        "x": 720,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "test_size": 0.3,
+          "seed": 0,
+          "stratify": true
+        }
+      }
+    },
+    {
+      "id": "ds-train",
+      "type": "TensorDataset",
+      "position": {
+        "x": 1080,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "target_type": "class"
+        }
+      }
+    },
+    {
+      "id": "ds-test",
+      "type": "TensorDataset",
+      "position": {
+        "x": 1080,
+        "y": 307
+      },
+      "data": {
+        "params": {
+          "target_type": "class"
+        }
+      }
+    },
+    {
+      "id": "dl-full",
+      "type": "DataLoader",
+      "position": {
+        "x": 1440,
+        "y": -260
+      },
+      "data": {
+        "params": {
+          "batch_size": 150,
+          "shuffle": false
+        }
+      }
+    },
+    {
+      "id": "model",
+      "type": "SequentialModel",
+      "position": {
+        "x": 1440,
+        "y": 520
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\": 2, \"nodes\": [{\"id\": \"in\", \"type\": \"Input\", \"ports\": [{\"id\": \"p_x\", \"name\": \"x\"}]}, {\"id\": \"l0\", \"type\": \"Linear\", \"params\": {\"in_features\": 4, \"out_features\": 16}}, {\"id\": \"r0\", \"type\": \"ReLU\"}, {\"id\": \"l1\", \"type\": \"Linear\", \"params\": {\"in_features\": 16, \"out_features\": 3}}, {\"id\": \"out\", \"type\": \"Output\", \"ports\": [{\"id\": \"p_y\", \"name\": \"y\"}]}], \"edges\": [{\"id\": \"e1\", \"source\": \"in\", \"target\": \"l0\", \"sourceHandle\": \"p_x\"}, {\"id\": \"e2\", \"source\": \"l0\", \"target\": \"r0\"}, {\"id\": \"e3\", \"source\": \"r0\", \"target\": \"l1\"}, {\"id\": \"e4\", \"source\": \"l1\", \"target\": \"out\", \"targetHandle\": \"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "opt",
+      "type": "Optimizer",
+      "position": {
+        "x": 1800,
+        "y": 520
+      },
+      "data": {
+        "params": {
+          "type": "SGD",
+          "lr": 0.0001
+        }
+      }
+    },
+    {
+      "id": "sched",
+      "type": "LRScheduler",
+      "position": {
+        "x": 1800,
+        "y": 832
+      },
+      "data": {
+        "params": {
+          "type": "ExponentialLR",
+          "gamma": 1.2
+        }
+      }
+    },
+    {
+      "id": "loss",
+      "type": "Loss",
+      "position": {
+        "x": 1440,
+        "y": 832
+      },
+      "data": {
+        "params": {
+          "type": "CrossEntropyLoss"
+        }
+      }
+    },
+    {
+      "id": "range",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 2160,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "epochs": 60,
+          "device": "cpu",
+          "scheduler_step": "epoch"
+        }
+      }
+    },
+    {
+      "id": "pick",
+      "type": "PythonScript",
+      "position": {
+        "x": 2520,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "code": "import math\nimport torch\n\ndef run(inputs, params):\n    # Loss against learning rate. The rate grew by the same factor every\n    # epoch, so the x axis of the plot is a log scale. Past the point where\n    # the loss is four times its minimum the run has diverged: cut it there.\n    losses = [float(v) for v in inputs[\"in1\"]]\n    lrs = list(inputs[\"in2\"][\"lr_history\"])[:len(losses)]\n    best = min(range(len(losses)), key=lambda i: losses[i])\n    end = len(losses)\n    for i in range(best, len(losses)):\n        if not math.isfinite(losses[i]) or losses[i] > 4 * losses[best]:\n            end = i\n            break\n    # Rule of thumb: a tenth of the rate at the lowest loss.\n    suggested = lrs[best] / 10\n    report = f\"lowest loss {losses[best]:.3f} at lr {lrs[best]:.3g}\"\n    if end < len(losses):\n        report += f\"; diverged by lr {lrs[end]:.3g}\"\n    report += f\"; suggested lr {suggested:.2g}\"\n    return {\"out1\": torch.tensor(losses[:end]), \"out2\": suggested, \"out3\": report}\n",
+          "input_ports": 2,
+          "output_ports": 3,
+          "input_types": "TENSOR,ANY",
+          "output_types": "TENSOR,SCALAR,STRING"
+        }
+      }
+    },
+    {
+      "id": "curve",
+      "type": "Visualize",
+      "position": {
+        "x": 2880,
+        "y": -312
+      },
+      "data": {
+        "params": {
+          "title": "Loss as the learning rate grows (x1.2 per epoch)",
+          "plot_type": "line"
+        }
+      }
+    },
+    {
+      "id": "report",
+      "type": "Print",
+      "position": {
+        "x": 2880,
+        "y": 156
+      },
+      "data": {
+        "params": {
+          "label": "learning-rate pick"
+        }
+      }
+    },
+    {
+      "id": "dl-train",
+      "type": "DataLoader",
+      "position": {
+        "x": 1440,
+        "y": 1196
+      },
+      "data": {
+        "params": {
+          "batch_size": 16,
+          "shuffle": true
+        }
+      }
+    },
+    {
+      "id": "c-model",
+      "type": "SequentialModel",
+      "position": {
+        "x": 1800,
+        "y": 1196
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\": 2, \"nodes\": [{\"id\": \"in\", \"type\": \"Input\", \"ports\": [{\"id\": \"p_x\", \"name\": \"x\"}]}, {\"id\": \"l0\", \"type\": \"Linear\", \"params\": {\"in_features\": 4, \"out_features\": 16}}, {\"id\": \"r0\", \"type\": \"ReLU\"}, {\"id\": \"l1\", \"type\": \"Linear\", \"params\": {\"in_features\": 16, \"out_features\": 3}}, {\"id\": \"out\", \"type\": \"Output\", \"ports\": [{\"id\": \"p_y\", \"name\": \"y\"}]}], \"edges\": [{\"id\": \"e1\", \"source\": \"in\", \"target\": \"l0\", \"sourceHandle\": \"p_x\"}, {\"id\": \"e2\", \"source\": \"l0\", \"target\": \"r0\"}, {\"id\": \"e3\", \"source\": \"r0\", \"target\": \"l1\"}, {\"id\": \"e4\", \"source\": \"l1\", \"target\": \"out\", \"targetHandle\": \"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "c-opt",
+      "type": "Optimizer",
+      "position": {
+        "x": 1800,
+        "y": 1456
+      },
+      "data": {
+        "params": {
+          "type": "SGD",
+          "lr": 0.04
+        }
+      }
+    },
+    {
+      "id": "c-loss",
+      "type": "Loss",
+      "position": {
+        "x": 1800,
+        "y": 1722
+      },
+      "data": {
+        "params": {
+          "type": "CrossEntropyLoss"
+        }
+      }
+    },
+    {
+      "id": "c-train",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 2160,
+        "y": 1196
+      },
+      "data": {
+        "params": {
+          "epochs": 40,
+          "device": "cpu"
+        }
+      }
+    },
+    {
+      "id": "c-eval",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 2520,
+        "y": 1196
+      },
+      "data": {
+        "params": {
+          "device": "cpu"
+        }
+      }
+    },
+    {
+      "id": "c-print",
+      "type": "Print",
+      "position": {
+        "x": 2880,
+        "y": 1196
+      },
+      "data": {
+        "params": {
+          "label": "test accuracy at the picked rate"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -460,
+        "y": 0
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The learning-rate range test, the standard first step before tuning anything else. Train once on the whole training split per step, starting at lr 0.0001 and multiplying it by 1.2 every epoch for 60 epochs, up to about 5. The loss first barely moves, then falls, then blows up. The script finds the lowest point and takes a tenth of that rate: lowest loss 0.472 at lr 0.439; diverged by lr 0.632; suggested lr 0.044. The branch below is ordinary training with that pick typed into its Optimizer (lr 0.04); it reaches test accuracy 0.978.\n\n學習率範圍測試，調其他參數之前的標準第一步。每一步用整份訓練資料訓練一次，學習率從 0.0001 開始，每個 epoch 乘以 1.2，跑 60 個 epoch，最後約到 5。loss 一開始幾乎不動，接著下降，最後爆掉。腳本找出最低點，取那個學習率的十分之一：lowest loss 0.472 at lr 0.439; diverged by lr 0.632; suggested lr 0.044。下方的分支是一般的訓練，把挑出的值填進它的 Optimizer（lr 0.04），測試正確率是 0.978。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -460,
+          "y": 0
+        },
+        "noteWidth": 400
+      }
+    },
+    {
+      "id": "note-axis",
+      "type": "note",
+      "position": {
+        "x": 3260,
+        "y": -312
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Each step along the x axis multiplies the learning rate by 1.2, so the axis is logarithmic. A pick cannot be wired into a parameter, so it is copied by hand: that keeps the confirming run readable on its own.\n\nx 軸每前進一格，學習率就乘以 1.2，所以這是對數刻度。挑出的值沒辦法用線接進參數，所以要手動抄過去；這樣確認用的那次訓練單獨看也看得懂。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "curve",
+        "boundOffset": {
+          "x": 380,
+          "y": 0
+        },
+        "noteWidth": 320
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t1",
+      "source": "start",
+      "target": "csv",
+      "sourceHandle": "trigger",
+      "targetHandle": "__trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e2",
+      "source": "csv",
+      "target": "split",
+      "sourceHandle": "tensor",
+      "targetHandle": "features",
+      "type": "data"
+    },
+    {
+      "id": "e3",
+      "source": "csv",
+      "target": "split",
+      "sourceHandle": "labels",
+      "targetHandle": "labels",
+      "type": "data"
+    },
+    {
+      "id": "e4",
+      "source": "split",
+      "target": "ds-train",
+      "sourceHandle": "x_train",
+      "targetHandle": "features",
+      "type": "data"
+    },
+    {
+      "id": "e5",
+      "source": "split",
+      "target": "ds-train",
+      "sourceHandle": "y_train",
+      "targetHandle": "targets",
+      "type": "data"
+    },
+    {
+      "id": "e6",
+      "source": "split",
+      "target": "ds-test",
+      "sourceHandle": "x_test",
+      "targetHandle": "features",
+      "type": "data"
+    },
+    {
+      "id": "e7",
+      "source": "split",
+      "target": "ds-test",
+      "sourceHandle": "y_test",
+      "targetHandle": "targets",
+      "type": "data"
+    },
+    {
+      "id": "e8",
+      "source": "ds-train",
+      "target": "ds-test",
+      "sourceHandle": "classes",
+      "targetHandle": "classes",
+      "type": "data"
+    },
+    {
+      "id": "e9",
+      "source": "ds-train",
+      "target": "dl-full",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset",
+      "type": "data"
+    },
+    {
+      "id": "e10",
+      "source": "model",
+      "target": "opt",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e11",
+      "source": "opt",
+      "target": "sched",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer",
+      "type": "data"
+    },
+    {
+      "id": "e12",
+      "source": "model",
+      "target": "range",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e13",
+      "source": "dl-full",
+      "target": "range",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader",
+      "type": "data"
+    },
+    {
+      "id": "e14",
+      "source": "opt",
+      "target": "range",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer",
+      "type": "data"
+    },
+    {
+      "id": "e15",
+      "source": "loss",
+      "target": "range",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn",
+      "type": "data"
+    },
+    {
+      "id": "e16",
+      "source": "sched",
+      "target": "range",
+      "sourceHandle": "scheduler",
+      "targetHandle": "lr_scheduler",
+      "type": "data"
+    },
+    {
+      "id": "e17",
+      "source": "range",
+      "target": "pick",
+      "sourceHandle": "losses",
+      "targetHandle": "in1",
+      "type": "data"
+    },
+    {
+      "id": "e18",
+      "source": "range",
+      "target": "pick",
+      "sourceHandle": "metrics",
+      "targetHandle": "in2",
+      "type": "data"
+    },
+    {
+      "id": "e19",
+      "source": "pick",
+      "target": "curve",
+      "sourceHandle": "out1",
+      "targetHandle": "data",
+      "type": "data"
+    },
+    {
+      "id": "e20",
+      "source": "pick",
+      "target": "report",
+      "sourceHandle": "out3",
+      "targetHandle": "value",
+      "type": "data"
+    },
+    {
+      "id": "e21",
+      "source": "ds-train",
+      "target": "dl-train",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset",
+      "type": "data"
+    },
+    {
+      "id": "e22",
+      "source": "c-model",
+      "target": "c-opt",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e23",
+      "source": "c-model",
+      "target": "c-train",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e24",
+      "source": "dl-train",
+      "target": "c-train",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader",
+      "type": "data"
+    },
+    {
+      "id": "e25",
+      "source": "c-opt",
+      "target": "c-train",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer",
+      "type": "data"
+    },
+    {
+      "id": "e26",
+      "source": "c-loss",
+      "target": "c-train",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn",
+      "type": "data"
+    },
+    {
+      "id": "e27",
+      "source": "c-train",
+      "target": "c-eval",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e28",
+      "source": "ds-test",
+      "target": "c-eval",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset",
+      "type": "data"
+    },
+    {
+      "id": "e29",
+      "source": "c-eval",
+      "target": "c-print",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value",
+      "type": "data"
+    }
+  ]
+}

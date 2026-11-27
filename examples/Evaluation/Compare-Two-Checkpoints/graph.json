@@ -1,0 +1,846 @@
+{
+  "name": "Compare two checkpoints",
+  "description": "Epoch 1 vs epoch 15 on the same tests",
+  "gallery": {
+    "main_tag": "evaluation",
+    "tags": [
+      "vision",
+      "digits",
+      "checkpoint",
+      "compare"
+    ],
+    "order": 30
+  },
+  "settings": {
+    "seed": 0
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "csv",
+      "type": "CSVReader",
+      "position": {
+        "x": 360,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "path": "data/samples/digits.csv",
+          "target_column": "label",
+          "target_type": "class"
+        }
+      }
+    },
+    {
+      "id": "scale",
+      "type": "ScalarMultiply",
+      "position": {
+        "x": 720,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "scalar": 0.0625
+        }
+      }
+    },
+    {
+      "id": "split",
+      "type": "TrainTestSplit",
+      "position": {
+        "x": 1080,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "test_size": 0.25,
+          "seed": 0,
+          "stratify": true
+        }
+      }
+    },
+    {
+      "id": "ds-train",
+      "type": "TensorDataset",
+      "position": {
+        "x": 1440,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "target_type": "class"
+        }
+      }
+    },
+    {
+      "id": "ds-test",
+      "type": "TensorDataset",
+      "position": {
+        "x": 1440,
+        "y": 307
+      },
+      "data": {
+        "params": {
+          "target_type": "class"
+        }
+      }
+    },
+    {
+      "id": "dl-train",
+      "type": "DataLoader",
+      "position": {
+        "x": 1800,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "batch_size": 64,
+          "shuffle": true
+        }
+      }
+    },
+    {
+      "id": "model",
+      "type": "SequentialModel",
+      "position": {
+        "x": 1800,
+        "y": 266
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\": 2, \"nodes\": [{\"id\": \"in\", \"type\": \"Input\", \"ports\": [{\"id\": \"p_x\", \"name\": \"x\"}]}, {\"id\": \"l0\", \"type\": \"Linear\", \"params\": {\"in_features\": 64, \"out_features\": 64}}, {\"id\": \"r0\", \"type\": \"ReLU\"}, {\"id\": \"l1\", \"type\": \"Linear\", \"params\": {\"in_features\": 64, \"out_features\": 10}}, {\"id\": \"out\", \"type\": \"Output\", \"ports\": [{\"id\": \"p_y\", \"name\": \"y\"}]}], \"edges\": [{\"id\": \"e1\", \"source\": \"in\", \"target\": \"l0\", \"sourceHandle\": \"p_x\"}, {\"id\": \"e2\", \"source\": \"l0\", \"target\": \"r0\"}, {\"id\": \"e3\", \"source\": \"r0\", \"target\": \"l1\"}, {\"id\": \"e4\", \"source\": \"l1\", \"target\": \"out\", \"targetHandle\": \"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "opt",
+      "type": "Optimizer",
+      "position": {
+        "x": 1800,
+        "y": 520
+      },
+      "data": {
+        "params": {
+          "type": "Adam",
+          "lr": 0.003
+        }
+      }
+    },
+    {
+      "id": "loss",
+      "type": "Loss",
+      "position": {
+        "x": 1800,
+        "y": 780
+      },
+      "data": {
+        "params": {
+          "type": "CrossEntropyLoss"
+        }
+      }
+    },
+    {
+      "id": "train",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 2160,
+        "y": 260
+      },
+      "data": {
+        "params": {
+          "epochs": 1,
+          "device": "cpu"
+        }
+      }
+    },
+    {
+      "id": "save-early",
+      "type": "CheckpointSaver",
+      "position": {
+        "x": 2520,
+        "y": 260
+      },
+      "data": {
+        "params": {
+          "path": "digits-epoch1.pt"
+        }
+      }
+    },
+    {
+      "id": "train-more",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 2880,
+        "y": 260
+      },
+      "data": {
+        "params": {
+          "epochs": 15,
+          "device": "cpu"
+        }
+      }
+    },
+    {
+      "id": "save-late",
+      "type": "CheckpointSaver",
+      "position": {
+        "x": 3240,
+        "y": 260
+      },
+      "data": {
+        "params": {
+          "path": "digits-epoch15.pt"
+        }
+      }
+    },
+    {
+      "id": "model-early",
+      "type": "SequentialModel",
+      "position": {
+        "x": 3240,
+        "y": 780
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\": 2, \"nodes\": [{\"id\": \"in\", \"type\": \"Input\", \"ports\": [{\"id\": \"p_x\", \"name\": \"x\"}]}, {\"id\": \"l0\", \"type\": \"Linear\", \"params\": {\"in_features\": 64, \"out_features\": 64}}, {\"id\": \"r0\", \"type\": \"ReLU\"}, {\"id\": \"l1\", \"type\": \"Linear\", \"params\": {\"in_features\": 64, \"out_features\": 10}}, {\"id\": \"out\", \"type\": \"Output\", \"ports\": [{\"id\": \"p_y\", \"name\": \"y\"}]}], \"edges\": [{\"id\": \"e1\", \"source\": \"in\", \"target\": \"l0\", \"sourceHandle\": \"p_x\"}, {\"id\": \"e2\", \"source\": \"l0\", \"target\": \"r0\"}, {\"id\": \"e3\", \"source\": \"r0\", \"target\": \"l1\"}, {\"id\": \"e4\", \"source\": \"l1\", \"target\": \"out\", \"targetHandle\": \"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "model-late",
+      "type": "SequentialModel",
+      "position": {
+        "x": 3240,
+        "y": 1118
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\": 2, \"nodes\": [{\"id\": \"in\", \"type\": \"Input\", \"ports\": [{\"id\": \"p_x\", \"name\": \"x\"}]}, {\"id\": \"l0\", \"type\": \"Linear\", \"params\": {\"in_features\": 64, \"out_features\": 64}}, {\"id\": \"r0\", \"type\": \"ReLU\"}, {\"id\": \"l1\", \"type\": \"Linear\", \"params\": {\"in_features\": 64, \"out_features\": 10}}, {\"id\": \"out\", \"type\": \"Output\", \"ports\": [{\"id\": \"p_y\", \"name\": \"y\"}]}], \"edges\": [{\"id\": \"e1\", \"source\": \"in\", \"target\": \"l0\", \"sourceHandle\": \"p_x\"}, {\"id\": \"e2\", \"source\": \"l0\", \"target\": \"r0\"}, {\"id\": \"e3\", \"source\": \"r0\", \"target\": \"l1\"}, {\"id\": \"e4\", \"source\": \"l1\", \"target\": \"out\", \"targetHandle\": \"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "wait",
+      "type": "PythonScript",
+      "position": {
+        "x": 3600,
+        "y": 390
+      },
+      "data": {
+        "params": {
+          "code": "def run(inputs, params):\n    # Passes the two fresh models through unchanged. Its third input is the\n    # second checkpoint's path, so the loaders after it run only once both\n    # files are written. Comparing checkpoints from earlier runs needs no\n    # gate: wire the models straight into the loaders.\n    return {\"out1\": inputs[\"in1\"], \"out2\": inputs[\"in2\"]}\n",
+          "input_ports": 3,
+          "output_ports": 2,
+          "input_types": "MODEL,MODEL,STRING",
+          "output_types": "MODEL,MODEL"
+        }
+      }
+    },
+    {
+      "id": "opt-early",
+      "type": "Optimizer",
+      "position": {
+        "x": 4305,
+        "y": 464
+      },
+      "data": {
+        "params": {
+          "type": "Adam",
+          "lr": 0.003
+        }
+      }
+    },
+    {
+      "id": "load-early",
+      "type": "CheckpointLoader",
+      "position": {
+        "x": 4305,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "path": "digits-epoch1.pt",
+          "device": "cpu"
+        }
+      }
+    },
+    {
+      "id": "infer-early",
+      "type": "Inference",
+      "position": {
+        "x": 4665,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "device": "cpu"
+        }
+      }
+    },
+    {
+      "id": "eval-early",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 4665,
+        "y": 338
+      },
+      "data": {
+        "params": {
+          "device": "cpu"
+        }
+      }
+    },
+    {
+      "id": "opt-late",
+      "type": "Optimizer",
+      "position": {
+        "x": 4305,
+        "y": 1244
+      },
+      "data": {
+        "params": {
+          "type": "Adam",
+          "lr": 0.003
+        }
+      }
+    },
+    {
+      "id": "load-late",
+      "type": "CheckpointLoader",
+      "position": {
+        "x": 4305,
+        "y": 780
+      },
+      "data": {
+        "params": {
+          "path": "digits-epoch15.pt",
+          "device": "cpu"
+        }
+      }
+    },
+    {
+      "id": "infer-late",
+      "type": "Inference",
+      "position": {
+        "x": 4665,
+        "y": 780
+      },
+      "data": {
+        "params": {
+          "device": "cpu"
+        }
+      }
+    },
+    {
+      "id": "eval-late",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 4665,
+        "y": 1118
+      },
+      "data": {
+        "params": {
+          "device": "cpu"
+        }
+      }
+    },
+    {
+      "id": "disagree",
+      "type": "PythonScript",
+      "position": {
+        "x": 5025,
+        "y": 390
+      },
+      "data": {
+        "params": {
+          "code": "import torch\n\ndef run(inputs, params):\n    # Test images the two checkpoints label differently, side by side.\n    early = inputs[\"in1\"].argmax(dim=1)\n    late = inputs[\"in2\"].argmax(dim=1)\n    x = inputs[\"in3\"]\n    truth = torch.tensor([int(v) for v in inputs[\"in4\"]])\n    differ = (early != late).nonzero().flatten()\n    fixed = int(((early != truth) & (late == truth)).sum())\n    broke = int(((early == truth) & (late != truth)).sum())\n    shown = x[differ[:12]].reshape(-1, 8, 8)\n    grid = torch.cat(list(shown), dim=1) if len(shown) else torch.zeros(8, 8)\n    report = (f\"{len(differ)} test images change label; the later checkpoint fixes {fixed} \"\n              f\"and breaks {broke}\")\n    return {\"out1\": grid, \"out2\": report}\n",
+          "input_ports": 4,
+          "output_ports": 2,
+          "input_types": "TENSOR,TENSOR,TENSOR,LIST",
+          "output_types": "TENSOR,STRING"
+        }
+      }
+    },
+    {
+      "id": "changed",
+      "type": "Visualize",
+      "position": {
+        "x": 5690,
+        "y": 208
+      },
+      "data": {
+        "params": {
+          "title": "Test images whose label changed",
+          "plot_type": "image"
+        }
+      }
+    },
+    {
+      "id": "report",
+      "type": "Print",
+      "position": {
+        "x": 5690,
+        "y": 676
+      },
+      "data": {
+        "params": {
+          "label": "what changed"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -460,
+        "y": 0
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "Two checkpoints of one run, scored on the same test split: after epoch 1 (digits-epoch1.pt) and after epoch 15 (digits-epoch15.pt). Each is loaded into a fresh SequentialModel, so this is how you would compare checkpoints from two different runs too. Test accuracy goes from 0.740 to 0.962. The script lists the images the two label differently: 109 test images change label, the later checkpoint fixes 100 of them and breaks 0.\n\n同一次訓練的兩個 checkpoint，用同一份測試資料評分：第 1 個 epoch 之後（digits-epoch1.pt）與第 15 個 epoch 之後（digits-epoch15.pt）。兩個都載入全新的 SequentialModel，所以比較兩次不同訓練的 checkpoint 也是這樣做。測試正確率從 0.740 變成 0.962。腳本列出兩者標成不同數字的影像：109 張測試影像的標籤改變，後面的 checkpoint 修正其中 100 張、弄錯 0 張。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -460,
+          "y": 0
+        },
+        "noteWidth": 380
+      }
+    },
+    {
+      "id": "note-compare",
+      "type": "note",
+      "position": {
+        "x": 4305,
+        "y": -480
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The two orange bubbles are Compare segments, one from load-early to infer-early and one from load-late to infer-late. After a run, click the orange border of a bubble and the Inspector lists what goes into that segment (the loaded model and the test images) and what comes out (the predicted scores). To add your own: select two nodes (click one, Shift-click the other), open Settings (the gear in the toolbar) and under Recording & Inspection click Create segment.\n\n兩個橘色泡泡是「段落比較」，一個從 load-early 到 infer-early，一個從 load-late 到 infer-late。執行之後，點泡泡的橘色邊框，Inspector 會列出進入這一段的東西（載入的模型與測試影像）和出來的東西（預測分數）。要自己加一段：選取兩個節點（點一個，再按住 Shift 點另一個），打開「設定」（工具列的齒輪），在「錄製與檢視」下按「建立段落」。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "load-early",
+        "boundOffset": {
+          "x": 0,
+          "y": -480
+        },
+        "noteWidth": 340
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t1",
+      "source": "start",
+      "target": "csv",
+      "sourceHandle": "trigger",
+      "targetHandle": "__trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e2",
+      "source": "csv",
+      "target": "scale",
+      "sourceHandle": "tensor",
+      "targetHandle": "tensor",
+      "type": "data"
+    },
+    {
+      "id": "e3",
+      "source": "scale",
+      "target": "split",
+      "sourceHandle": "tensor",
+      "targetHandle": "features",
+      "type": "data"
+    },
+    {
+      "id": "e4",
+      "source": "csv",
+      "target": "split",
+      "sourceHandle": "labels",
+      "targetHandle": "labels",
+      "type": "data"
+    },
+    {
+      "id": "e5",
+      "source": "split",
+      "target": "ds-train",
+      "sourceHandle": "x_train",
+      "targetHandle": "features",
+      "type": "data"
+    },
+    {
+      "id": "e6",
+      "source": "split",
+      "target": "ds-train",
+      "sourceHandle": "y_train",
+      "targetHandle": "targets",
+      "type": "data"
+    },
+    {
+      "id": "e7",
+      "source": "split",
+      "target": "ds-test",
+      "sourceHandle": "x_test",
+      "targetHandle": "features",
+      "type": "data"
+    },
+    {
+      "id": "e8",
+      "source": "split",
+      "target": "ds-test",
+      "sourceHandle": "y_test",
+      "targetHandle": "targets",
+      "type": "data"
+    },
+    {
+      "id": "e9",
+      "source": "ds-train",
+      "target": "ds-test",
+      "sourceHandle": "classes",
+      "targetHandle": "classes",
+      "type": "data"
+    },
+    {
+      "id": "e10",
+      "source": "ds-train",
+      "target": "dl-train",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset",
+      "type": "data"
+    },
+    {
+      "id": "e11",
+      "source": "model",
+      "target": "opt",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e12",
+      "source": "model",
+      "target": "train",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e13",
+      "source": "dl-train",
+      "target": "train",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader",
+      "type": "data"
+    },
+    {
+      "id": "e14",
+      "source": "opt",
+      "target": "train",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer",
+      "type": "data"
+    },
+    {
+      "id": "e15",
+      "source": "loss",
+      "target": "train",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn",
+      "type": "data"
+    },
+    {
+      "id": "e16",
+      "source": "train",
+      "target": "save-early",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e17",
+      "source": "train",
+      "target": "save-early",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer",
+      "type": "data"
+    },
+    {
+      "id": "e18",
+      "source": "train",
+      "target": "save-early",
+      "sourceHandle": "epoch",
+      "targetHandle": "epoch",
+      "type": "data"
+    },
+    {
+      "id": "e19",
+      "source": "save-early",
+      "target": "train-more",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e20",
+      "source": "dl-train",
+      "target": "train-more",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader",
+      "type": "data"
+    },
+    {
+      "id": "e21",
+      "source": "train",
+      "target": "train-more",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer",
+      "type": "data"
+    },
+    {
+      "id": "e22",
+      "source": "loss",
+      "target": "train-more",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn",
+      "type": "data"
+    },
+    {
+      "id": "e23",
+      "source": "train",
+      "target": "train-more",
+      "sourceHandle": "epoch",
+      "targetHandle": "start_epoch",
+      "type": "data"
+    },
+    {
+      "id": "e24",
+      "source": "train-more",
+      "target": "save-late",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e25",
+      "source": "train-more",
+      "target": "save-late",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer",
+      "type": "data"
+    },
+    {
+      "id": "e26",
+      "source": "train-more",
+      "target": "save-late",
+      "sourceHandle": "epoch",
+      "targetHandle": "epoch",
+      "type": "data"
+    },
+    {
+      "id": "e27",
+      "source": "model-early",
+      "target": "wait",
+      "sourceHandle": "model",
+      "targetHandle": "in1",
+      "type": "data"
+    },
+    {
+      "id": "e28",
+      "source": "model-late",
+      "target": "wait",
+      "sourceHandle": "model",
+      "targetHandle": "in2",
+      "type": "data"
+    },
+    {
+      "id": "e29",
+      "source": "save-late",
+      "target": "wait",
+      "sourceHandle": "path",
+      "targetHandle": "in3",
+      "type": "data"
+    },
+    {
+      "id": "e30",
+      "source": "wait",
+      "target": "opt-early",
+      "sourceHandle": "out1",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e31",
+      "source": "wait",
+      "target": "load-early",
+      "sourceHandle": "out1",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e32",
+      "source": "opt-early",
+      "target": "load-early",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer",
+      "type": "data"
+    },
+    {
+      "id": "e33",
+      "source": "load-early",
+      "target": "infer-early",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e34",
+      "source": "split",
+      "target": "infer-early",
+      "sourceHandle": "x_test",
+      "targetHandle": "input",
+      "type": "data"
+    },
+    {
+      "id": "e35",
+      "source": "load-early",
+      "target": "eval-early",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e36",
+      "source": "ds-test",
+      "target": "eval-early",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset",
+      "type": "data"
+    },
+    {
+      "id": "e37",
+      "source": "wait",
+      "target": "opt-late",
+      "sourceHandle": "out2",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e38",
+      "source": "wait",
+      "target": "load-late",
+      "sourceHandle": "out2",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e39",
+      "source": "opt-late",
+      "target": "load-late",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer",
+      "type": "data"
+    },
+    {
+      "id": "e40",
+      "source": "load-late",
+      "target": "infer-late",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e41",
+      "source": "split",
+      "target": "infer-late",
+      "sourceHandle": "x_test",
+      "targetHandle": "input",
+      "type": "data"
+    },
+    {
+      "id": "e42",
+      "source": "load-late",
+      "target": "eval-late",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e43",
+      "source": "ds-test",
+      "target": "eval-late",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset",
+      "type": "data"
+    },
+    {
+      "id": "e44",
+      "source": "infer-early",
+      "target": "disagree",
+      "sourceHandle": "output",
+      "targetHandle": "in1",
+      "type": "data"
+    },
+    {
+      "id": "e45",
+      "source": "infer-late",
+      "target": "disagree",
+      "sourceHandle": "output",
+      "targetHandle": "in2",
+      "type": "data"
+    },
+    {
+      "id": "e46",
+      "source": "split",
+      "target": "disagree",
+      "sourceHandle": "x_test",
+      "targetHandle": "in3",
+      "type": "data"
+    },
+    {
+      "id": "e47",
+      "source": "split",
+      "target": "disagree",
+      "sourceHandle": "y_test",
+      "targetHandle": "in4",
+      "type": "data"
+    },
+    {
+      "id": "e48",
+      "source": "disagree",
+      "target": "changed",
+      "sourceHandle": "out1",
+      "targetHandle": "data",
+      "type": "data"
+    },
+    {
+      "id": "e49",
+      "source": "disagree",
+      "target": "report",
+      "sourceHandle": "out2",
+      "targetHandle": "value",
+      "type": "data"
+    }
+  ],
+  "segmentGroups": [
+    {
+      "id": "seg-early",
+      "headNodeId": "load-early",
+      "tailNodeId": "infer-early"
+    },
+    {
+      "id": "seg-late",
+      "headNodeId": "load-late",
+      "tailNodeId": "infer-late"
+    }
+  ]
+}

@@ -388,6 +388,22 @@ _SHIPPED: dict[str, tuple[str, int, tuple[str, ...], str | None]] = {
     "Papers/DQN-CartPole": ("papers", 160, ("rl", "dqn"), None),
     "Papers/PPO-CartPole": ("papers", 170, ("rl", "ppo"), None),
     "Papers/QLearning-GridWorld": ("papers", 180, ("rl", "q-learning"), None),
+    # The practical examples added in Phase 3.
+    "Data/Dataset-Inspection": ("data", 10, ("vision", "digits", "statistics"), None),
+    "Data/Split-And-Leak-Check": ("data", 20, ("tabular", "iris", "split", "leakage"), None),
+    "Training/Early-Stopping-Best-Checkpoint": ("training", 30, ("vision", "digits", "early-stopping", "checkpoint"), None),
+    "Training/Transfer-Frozen-Backbone": ("training", 60, ("vision", "digits", "transfer-learning", "fine-tuning"), None),
+    "Evaluation/Multi-Seed-Mean-Std": ("evaluation", 10, ("vision", "digits", "seeds", "mlp"), None),
+    "Evaluation/Checkpoint-Confusion-Matrix": ("evaluation", 20, ("vision", "digits", "checkpoint", "confusion-matrix"), None),
+    "Evaluation/Compare-Two-Checkpoints": ("evaluation", 30, ("vision", "digits", "checkpoint", "compare"), None),
+    "Evaluation/Embedding-Projection-2D": ("evaluation", 40, ("vision", "digits", "embeddings", "pca"), None),
+    "Research/LR-Range-Test": ("research", 10, ("tabular", "iris", "learning-rate", "optimization"), None),
+    "Research/LR-BatchSize-Grid": ("research", 20, ("tabular", "iris", "sweep", "hyperparameters"), None),
+    "Research/Ablation-Input-Standardization": ("research", 30, ("tabular", "iris", "ablation", "preprocessing"), None),
+    "Deploy/Classifier-Service/Train-And-Export": ("deploy", 10, ("tabular", "iris", "export", "safetensors"), None),
+    "Deploy/Classifier-Service/Serve-As-Function": ("deploy", 20, ("tabular", "iris", "api", "inference"), None),
+    "LLM/RAG-Retrieval-Hit-Rate": ("llm", 40, ("nlp", "rag", "retrieval", "metrics"), None),
+    "LLM/Finetune-Char-LM-Custom-Text": ("llm", 20, ("nlp", "fine-tuning", "language-model", "perplexity"), None),
 }
 
 #: The domain tags; every built-in names at least one of them.

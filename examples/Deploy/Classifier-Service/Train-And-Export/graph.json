@@ -1,0 +1,400 @@
+{
+  "name": "Train and export a classifier",
+  "description": "Train on iris, save safetensors weights",
+  "gallery": {
+    "main_tag": "deploy",
+    "tags": [
+      "tabular",
+      "iris",
+      "export",
+      "safetensors"
+    ],
+    "order": 10
+  },
+  "settings": {
+    "seed": 0
+  },
+  "nodes": [
+    {
+      "id": "start",
+      "type": "Start",
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "data": {
+        "params": {}
+      }
+    },
+    {
+      "id": "csv",
+      "type": "CSVReader",
+      "position": {
+        "x": 360,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "path": "data/samples/iris.csv",
+          "target_column": "species",
+          "target_type": "class"
+        }
+      }
+    },
+    {
+      "id": "split",
+      "type": "TrainTestSplit",
+      "position": {
+        "x": 720,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "test_size": 0.3,
+          "seed": 0,
+          "stratify": true
+        }
+      }
+    },
+    {
+      "id": "ds-train",
+      "type": "TensorDataset",
+      "position": {
+        "x": 1080,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "target_type": "class"
+        }
+      }
+    },
+    {
+      "id": "ds-test",
+      "type": "TensorDataset",
+      "position": {
+        "x": 1080,
+        "y": 307
+      },
+      "data": {
+        "params": {
+          "target_type": "class"
+        }
+      }
+    },
+    {
+      "id": "dl-train",
+      "type": "DataLoader",
+      "position": {
+        "x": 1440,
+        "y": -260
+      },
+      "data": {
+        "params": {
+          "batch_size": 16,
+          "shuffle": true
+        }
+      }
+    },
+    {
+      "id": "model",
+      "type": "SequentialModel",
+      "position": {
+        "x": 1440,
+        "y": 312
+      },
+      "data": {
+        "params": {
+          "layers": "{\"version\": 2, \"nodes\": [{\"id\": \"in\", \"type\": \"Input\", \"ports\": [{\"id\": \"p_x\", \"name\": \"x\"}]}, {\"id\": \"l0\", \"type\": \"Linear\", \"params\": {\"in_features\": 4, \"out_features\": 16}}, {\"id\": \"r0\", \"type\": \"ReLU\"}, {\"id\": \"l1\", \"type\": \"Linear\", \"params\": {\"in_features\": 16, \"out_features\": 3}}, {\"id\": \"out\", \"type\": \"Output\", \"ports\": [{\"id\": \"p_y\", \"name\": \"y\"}]}], \"edges\": [{\"id\": \"e1\", \"source\": \"in\", \"target\": \"l0\", \"sourceHandle\": \"p_x\"}, {\"id\": \"e2\", \"source\": \"l0\", \"target\": \"r0\"}, {\"id\": \"e3\", \"source\": \"r0\", \"target\": \"l1\"}, {\"id\": \"e4\", \"source\": \"l1\", \"target\": \"out\", \"targetHandle\": \"p_y\"}]}"
+        }
+      }
+    },
+    {
+      "id": "opt",
+      "type": "Optimizer",
+      "position": {
+        "x": 1440,
+        "y": 572
+      },
+      "data": {
+        "params": {
+          "type": "Adam",
+          "lr": 0.01
+        }
+      }
+    },
+    {
+      "id": "loss",
+      "type": "Loss",
+      "position": {
+        "x": 1440,
+        "y": 832
+      },
+      "data": {
+        "params": {
+          "type": "CrossEntropyLoss"
+        }
+      }
+    },
+    {
+      "id": "train",
+      "type": "TrainingLoop",
+      "position": {
+        "x": 1800,
+        "y": 312
+      },
+      "data": {
+        "params": {
+          "epochs": 40,
+          "device": "cpu"
+        }
+      }
+    },
+    {
+      "id": "eval",
+      "type": "EvaluateModel",
+      "position": {
+        "x": 2160,
+        "y": 312
+      },
+      "data": {
+        "params": {
+          "device": "cpu"
+        }
+      }
+    },
+    {
+      "id": "print-acc",
+      "type": "Print",
+      "position": {
+        "x": 2520,
+        "y": 312
+      },
+      "data": {
+        "params": {
+          "label": "test accuracy"
+        }
+      }
+    },
+    {
+      "id": "save",
+      "type": "ModelSaver",
+      "position": {
+        "x": 2160,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "path": "iris-classifier.safetensors",
+          "save_mode": "state_dict",
+          "format": "safetensors"
+        }
+      }
+    },
+    {
+      "id": "print-path",
+      "type": "Print",
+      "position": {
+        "x": 2520,
+        "y": 0
+      },
+      "data": {
+        "params": {
+          "label": "weights written to"
+        }
+      }
+    },
+    {
+      "id": "note-overview",
+      "type": "note",
+      "position": {
+        "x": -460,
+        "y": 0
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The first half of a deployment: train a small iris classifier (4 measurements in, 3 species out) and export its weights. Test accuracy is 1.000. ModelSaver writes iris-classifier.safetensors into the models directory, in safetensors format, which holds tensors only and cannot run code when loaded. Then open Serve-As-Function from the same gallery folder: it loads this file and answers one flower at a time over HTTP.\n\n部署的前半段：訓練一個小的 iris 分類器（輸入 4 個測量值，輸出 3 個品種），並匯出權重。測試正確率是 1.000。ModelSaver 把 iris-classifier.safetensors 寫到 models 目錄，格式是 safetensors：只存張量，載入時不會執行任何程式碼。接著打開同一個資料夾裡的 Serve-As-Function：它載入這個檔案，透過 HTTP 一次回答一朵花。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "start",
+        "boundOffset": {
+          "x": -460,
+          "y": 0
+        },
+        "noteWidth": 380
+      }
+    },
+    {
+      "id": "note-contract",
+      "type": "note",
+      "position": {
+        "x": 2160,
+        "y": -239
+      },
+      "data": {
+        "noteKind": "text",
+        "noteContent": "The serving graph rebuilds the model from its layer list and loads only the weights, so both graphs must use the same layers (here 4, 16, 3). Change one, change the other.\n\n負責服務的圖依照層的清單重建模型，只載入權重，所以兩張圖的層必須相同（這裡是 4、16、3）。改了一邊，另一邊也要改。",
+        "noteColor": "#3d3d1a",
+        "boundToNodeId": "save",
+        "boundOffset": {
+          "x": 0,
+          "y": -239
+        },
+        "noteWidth": 320
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "t1",
+      "source": "start",
+      "target": "csv",
+      "sourceHandle": "trigger",
+      "targetHandle": "__trigger",
+      "type": "trigger"
+    },
+    {
+      "id": "e2",
+      "source": "csv",
+      "target": "split",
+      "sourceHandle": "tensor",
+      "targetHandle": "features",
+      "type": "data"
+    },
+    {
+      "id": "e3",
+      "source": "csv",
+      "target": "split",
+      "sourceHandle": "labels",
+      "targetHandle": "labels",
+      "type": "data"
+    },
+    {
+      "id": "e4",
+      "source": "split",
+      "target": "ds-train",
+      "sourceHandle": "x_train",
+      "targetHandle": "features",
+      "type": "data"
+    },
+    {
+      "id": "e5",
+      "source": "split",
+      "target": "ds-train",
+      "sourceHandle": "y_train",
+      "targetHandle": "targets",
+      "type": "data"
+    },
+    {
+      "id": "e6",
+      "source": "split",
+      "target": "ds-test",
+      "sourceHandle": "x_test",
+      "targetHandle": "features",
+      "type": "data"
+    },
+    {
+      "id": "e7",
+      "source": "split",
+      "target": "ds-test",
+      "sourceHandle": "y_test",
+      "targetHandle": "targets",
+      "type": "data"
+    },
+    {
+      "id": "e8",
+      "source": "ds-train",
+      "target": "ds-test",
+      "sourceHandle": "classes",
+      "targetHandle": "classes",
+      "type": "data"
+    },
+    {
+      "id": "e9",
+      "source": "ds-train",
+      "target": "dl-train",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset",
+      "type": "data"
+    },
+    {
+      "id": "e10",
+      "source": "model",
+      "target": "opt",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e11",
+      "source": "model",
+      "target": "train",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e12",
+      "source": "dl-train",
+      "target": "train",
+      "sourceHandle": "dataloader",
+      "targetHandle": "dataloader",
+      "type": "data"
+    },
+    {
+      "id": "e13",
+      "source": "opt",
+      "target": "train",
+      "sourceHandle": "optimizer",
+      "targetHandle": "optimizer",
+      "type": "data"
+    },
+    {
+      "id": "e14",
+      "source": "loss",
+      "target": "train",
+      "sourceHandle": "loss_fn",
+      "targetHandle": "loss_fn",
+      "type": "data"
+    },
+    {
+      "id": "e15",
+      "source": "train",
+      "target": "eval",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e16",
+      "source": "ds-test",
+      "target": "eval",
+      "sourceHandle": "dataset",
+      "targetHandle": "dataset",
+      "type": "data"
+    },
+    {
+      "id": "e17",
+      "source": "eval",
+      "target": "print-acc",
+      "sourceHandle": "accuracy",
+      "targetHandle": "value",
+      "type": "data"
+    },
+    {
+      "id": "e18",
+      "source": "train",
+      "target": "save",
+      "sourceHandle": "model",
+      "targetHandle": "model",
+      "type": "data"
+    },
+    {
+      "id": "e19",
+      "source": "save",
+      "target": "print-path",
+      "sourceHandle": "path",
+      "targetHandle": "value",
+      "type": "data"
+    }
+  ]
+}
