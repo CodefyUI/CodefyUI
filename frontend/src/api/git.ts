@@ -982,6 +982,29 @@ export async function getGitFile(target: {
   return normalizeFileAtRef((await res.json()) as RawFileAtRef);
 }
 
+/** One saved graph's logic document at one ref (`GET /api/git/graph`). */
+export interface GitGraphAtRef {
+  name: string;
+  ref: string;
+  storage: 'dir' | 'file';
+  logic: Record<string, unknown>;
+  repairs: { kind: string; path: string; detail: string }[];
+}
+
+/**
+ * Saved graph `name` (its file stem) at `HEAD`, `index`, `worktree` or a sha,
+ * whether it is one file or a folder. Null when the graph is not there at
+ * that ref (an added or deleted graph), so the caller can summarise it as
+ * "everything added" or "everything removed".
+ */
+export async function getGitGraph(name: string, ref: string): Promise<GitGraphAtRef | null> {
+  const query = new URLSearchParams({ name, ref });
+  const res = await fetch(`${BASE_URL}/graph?${query.toString()}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw await gitApiError(res);
+  return (await res.json()) as GitGraphAtRef;
+}
+
 /* ── Writes (the session token, via apiFetch) ───────────────────────── */
 
 type MutationMethod = 'POST' | 'PUT' | 'DELETE';

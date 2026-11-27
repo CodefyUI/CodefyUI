@@ -2327,6 +2327,9 @@ const zhTW: Record<TranslationKey, string> = {
   'git.gdiff.noLogicChange': '邏輯無變更',
   'git.gdiff.unparseable': '無法解析為圖表',
   'git.discard.confirm': '捨棄 {name} 的變更？',
+  'git.discard.confirmGraph': '捨棄圖 {name} 的所有變更（{count} 個檔）？',
+  'git.graphFolder.toggle': '顯示檔案：',
+  'git.graphFolder.files': '{count} 個檔',
   'git.discard.confirmUntracked': '刪除 {name}？此檔案未被 git 追蹤，無法復原。',
   'git.discard.confirmAll':
     '捨棄 {changed} 個變更並刪除 {untracked} 個未追蹤檔案？此動作無法復原。',

@@ -1110,3 +1110,29 @@
   outline: none;
   box-shadow: var(--focus-ring);
 }
+
+/* ── A graph stored as a folder (phase 4B) ──────────────────────────────── */
+/* One row for the whole folder, the graph-level summary under it, and its
+   files when opened. The summary is the diff window's strip, quieter. */
+.graphFolder {
+  display: flex;
+  flex-direction: column;
+}
+
+.graphFolderSummary {
+  padding: 0 var(--sp-3) var(--sp-2) calc(var(--sp-2) + 28px);
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+}
+
+.graphFolderSummary ul,
+.graphFolderSummary p {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+}
+
+.graphFolder > .list {
+  padding-left: var(--sp-4);
+}

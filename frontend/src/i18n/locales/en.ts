@@ -2697,6 +2697,9 @@ const en = {
   'git.gdiff.noLogicChange': 'No logic change',
   'git.gdiff.unparseable': 'Could not parse as a graph',
   'git.discard.confirm': 'Discard changes to {name}?',
+  'git.discard.confirmGraph': 'Discard every change to the graph {name} ({count} files)?',
+  'git.graphFolder.toggle': 'Show the files of',
+  'git.graphFolder.files': '{count} file(s)',
   // An untracked file has no copy anywhere, so this one says "delete" and
   // says the loss is permanent.
   'git.discard.confirmUntracked':

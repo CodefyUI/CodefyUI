@@ -2090,6 +2090,16 @@ describe('applyWorktreeChange', () => {
     expect(toasts()[0].message).toBe(say('git.toast.changedOnDisk', { count: 1 }));
   });
 
+  it('reads any file under a graph folder as that graph (storage v2)', async () => {
+    openTab('demo', 'demo', '/proj');
+    api.gitDiscard.mockResolvedValue(
+      mutation({ changed_paths: ['graphs/demo/nodes/conv-1.json', 'graphs/demo/edges.jsonl'] }),
+    );
+    await git().discard('all');
+    expect(toasts()).toHaveLength(1);
+    expect(toasts()[0].message).toBe(say('git.toast.changedOnDisk', { count: 1 }));
+  });
+
   it('ignores paths that are not saved graphs', async () => {
     openTab('demo', 'demo', '/proj');
     api.gitDiscard.mockResolvedValue(
