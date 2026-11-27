@@ -78,6 +78,7 @@ from ..core.run_store import (
     EventRecord,
     MetricRecord,
     RunRecord,
+    run_project_refusal,
 )
 from ..core.scheduling import QueueReason
 
@@ -273,6 +274,21 @@ async def _require_run(service: RunService, run_id: str) -> RunRecord:
     return record
 
 
+async def _require_run_files(service: RunService, run_id: str) -> RunRecord:
+    """``_require_run`` for a route that reads or removes the run's FILES.
+
+    409 ``run_project_not_open`` when the run was created under another
+    data root than the open one (``run_store.run_project_refusal``): its
+    checkpoints, TensorBoard logdir and received files are in that
+    project, and the same paths under the open root are someone else's.
+    """
+    record = await _require_run(service, run_id)
+    refusal = run_project_refusal(record)
+    if refusal is not None:
+        raise HTTPException(status_code=409, detail=refusal)
+    return record
+
+
 @router.post("", openapi_extra={
     # Hand-parsing the body takes it out of the generated schema, and an
     # endpoint whose /docs page shows no request body is worse documentation
@@ -395,8 +411,14 @@ async def list_runs(
     status: list[str] | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
+    scope: str = Query(default="project", pattern="^(project|all)$"),
 ):
     """Newest first. ``?status=`` repeats (``?status=queued&status=running``).
+
+    ``?scope=project`` (the default) lists the runs of the open project:
+    those created under its data root, plus the runs from before projects
+    recorded one. ``?scope=all`` lists every run; each row carries
+    ``data_root`` and ``project_dir`` so a client can say whose it is.
 
     ``total`` is the unpaged count so a table can size itself without
     walking every page.
@@ -424,9 +446,12 @@ async def list_runs(
                 status_code=400,
                 detail=f"unknown run status {unknown}; expected one of "
                        f"{sorted(RUN_STATUSES)}")
+    this_project = scope == "project"
     records = await service.store.list_runs(status=status, limit=limit,
-                                            offset=offset)
-    total = await service.store.count_runs(status=status)
+                                            offset=offset,
+                                            this_project=this_project)
+    total = await service.store.count_runs(status=status,
+                                           this_project=this_project)
     positions = await _queue_positions(service, records)
     finals = await service.store.latest_metrics([r.id for r in records])
     producers = await service.store.metric_producers_by_run(
@@ -525,7 +550,7 @@ async def delete_run(run_id: str, request: Request):
     run that answers 404 everywhere else.
     """
     service = _get_service(request)
-    record = await _require_run(service, run_id)
+    record = await _require_run_files(service, run_id)
     if service.is_active(run_id) or service.is_queued(run_id):
         raise HTTPException(
             status_code=409,
@@ -788,7 +813,7 @@ async def get_run_artifacts(
     the worker whose run wrote the file (``local``: this server).
     """
     service = _get_service(request)
-    await _require_run(service, run_id)
+    await _require_run_files(service, run_id)
     artifacts = await service.store.list_artifacts(run_id, kind=kind)
     return {
         "run_id": run_id,
@@ -974,7 +999,7 @@ async def download_run_artifact(run_id: str, artifact_id: int,
     from ..core import transfer
 
     service = _get_service(request)
-    await _require_run(service, run_id)
+    await _require_run_files(service, run_id)
     records = await service.store.list_artifacts(run_id)
     record = next((r for r in records if r.id == artifact_id), None)
     if record is None:

@@ -504,7 +504,7 @@ async def test_versions_list_marks_active_and_echoes_note(test_client, app_db):
     ]
     assert all(set(r.keys()) == {
         "version", "source_graph_name", "note", "created_at", "active",
-        "git_commit", "git_dirty",
+        "git_commit", "git_dirty", "project_dir",
     } for r in rows)
 
     resp = await test_client.get("/api/apps/nope/versions")

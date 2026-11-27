@@ -61,6 +61,7 @@ from typing import Any, Iterable, Mapping, NamedTuple, Sequence
 from uuid import uuid4
 
 from ..config import settings
+from .data_paths import data_root as current_data_root
 from .db import Database, transaction, utc_now_iso
 from .mounts import BACKEND_LOCAL, BACKEND_MOUNT, BACKEND_S3, BACKENDS, translate
 from .plugin_loader import is_enabled, load_lockfile
@@ -131,7 +132,7 @@ _RUN_COLUMNS = (
     "id, name, options, status, error, queue_key, created_at, started_at, "
     "finished_at, git_commit, git_dirty, plugin_pins, sweep_id, sweep_variant, "
     "fingerprint_digest, execution_facts, study_id, study_attempt_id, "
-    "worker_id, devices"
+    "worker_id, devices, data_root, project_dir"
 )
 _METRIC_COLUMNS = "run_id, node_id, name, step, value, ts"
 _EVENT_COLUMNS = "run_id, cursor, type, payload, ts"
@@ -439,6 +440,14 @@ class RunRecord:
     #: ``device`` as every run before #769 did. The first entry is the run's
     #: device and so its ``queue_key``; the run holds a slot on every entry.
     devices: list[str] | None = None
+    #: The data root (``data_paths.data_root``) and the open project when
+    #: the run was created (MIGRATION_019). Every file the run writes is
+    #: under ``data_root``; a route that reads or removes those files
+    #: refuses while another root is open (``run_project_refusal``). Both
+    #: None for runs from before the migration, which count as the current
+    #: root; ``project_dir`` is also None for a run made in flat mode.
+    data_root: str | None = None
+    project_dir: str | None = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "RunRecord":
@@ -470,7 +479,40 @@ class RunRecord:
             study_attempt_id=row["study_attempt_id"],
             worker_id=row["worker_id"] or WORKER_LOCAL,
             devices=_loads(row["devices"]),
+            data_root=row["data_root"],
+            project_dir=row["project_dir"],
         )
+
+
+#: The 409 code for reaching a run's files while its data root is not open.
+RUN_PROJECT_NOT_OPEN = "run_project_not_open"
+
+
+def run_project_refusal(record: RunRecord) -> dict[str, Any] | None:
+    """The 409 detail for reaching *record*'s files from here, or None.
+
+    A run's files (checkpoints, TensorBoard logdir, what a worker sent)
+    are under the data root it was created in. While another one is open
+    they are refused rather than looked up under the open root, where the
+    same relative path names a different project's file or nothing. A run
+    from before MIGRATION_019 records no root and counts as the open one.
+    """
+    if record.data_root is None:
+        return None
+    if record.data_root == str(current_data_root()):
+        return None
+    if record.project_dir:
+        where = (f"project '{Path(record.project_dir).name}' "
+                 f"({record.project_dir})")
+    else:
+        where = f"the data folder {record.data_root} (no project)"
+    return {
+        "code": RUN_PROJECT_NOT_OPEN,
+        "message": (f"run {record.id} belongs to {where}, which is not "
+                    "open; open it to reach this run's files"),
+        "details": {"run_id": record.id, "project_dir": record.project_dir,
+                    "data_root": record.data_root},
+    }
 
 
 @dataclass(frozen=True)
@@ -775,6 +817,9 @@ class RunStore:
             study_attempt_id=study_attempt_id,
             worker_id=worker_id,
             devices=None if devices is None else list(devices),
+            data_root=str(current_data_root()),
+            project_dir=(None if settings.PROJECT_DIR is None
+                         else str(settings.PROJECT_DIR)),
         )
         params = (
             record.id, record.name, _dumps(graph_snapshot),
@@ -786,7 +831,7 @@ class RunStore:
             record.study_id, record.study_attempt_id,
             record.worker_id,
             None if record.devices is None else _dumps(record.devices),
-            graph_hash,
+            graph_hash, record.data_root, record.project_dir,
         )
 
         def _insert(conn: sqlite3.Connection) -> None:
@@ -794,8 +839,9 @@ class RunStore:
                 "INSERT INTO exec_runs (id, name, graph_snapshot, options, "
                 "status, queue_key, created_at, git_commit, git_dirty, "
                 "plugin_pins, sweep_id, sweep_variant, study_id, "
-                "study_attempt_id, worker_id, devices, graph_hash) VALUES "
-                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "study_attempt_id, worker_id, devices, graph_hash, "
+                "data_root, project_dir) VALUES "
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 params,
             )
 
@@ -888,6 +934,7 @@ class RunStore:
         status: str | Sequence[str] | None = None,
         limit: int = 50,
         offset: int = 0,
+        this_project: bool = False,
     ) -> list[RunRecord]:
         """Newest first. Ties break on insertion order, never scan order.
 
@@ -899,8 +946,12 @@ class RunStore:
         A single-status filter is fully index-ordered; a multi-status one
         merges two index ranges and pays a sort. That is accepted — the
         query exists to find the handful of runs still in flight.
+
+        *this_project* keeps the runs whose files are under the open data
+        root (and the runs from before MIGRATION_019, which have none
+        recorded): the Runs panel's "this project" view.
         """
-        where, params = self._status_filter(status)
+        where, params = self._run_filter(status, this_project)
         if where is None:
             return []
         params += [limit, offset]
@@ -916,13 +967,14 @@ class RunStore:
 
     async def count_runs(
         self, *, status: str | Sequence[str] | None = None,
+        this_project: bool = False,
     ) -> int:
         """Total matching runs, ignoring limit/offset.
 
         The paging companion to ``list_runs``: a table cannot render
         "1-50 of 213" or size a scrollbar from a page alone.
         """
-        where, params = self._status_filter(status)
+        where, params = self._run_filter(status, this_project)
         if where is None:
             return 0
 
@@ -931,6 +983,20 @@ class RunStore:
                 f"SELECT COUNT(*) FROM exec_runs{where}", params).fetchone()[0]
 
         return await self.db.run(_count)
+
+    @classmethod
+    def _run_filter(
+        cls, status: str | Sequence[str] | None, this_project: bool,
+    ) -> tuple[str | None, list[Any]]:
+        """``_status_filter`` plus, with *this_project*, the open data root."""
+        where, params = cls._status_filter(status)
+        if where is None or not this_project:
+            return where, params
+        clause = "(data_root IS NULL OR data_root = ?)"
+        params.append(str(current_data_root()))
+        if where:
+            return f"{where} AND {clause}", params
+        return f" WHERE {clause}", params
 
     @staticmethod
     def _status_filter(
@@ -2074,12 +2140,17 @@ class RunStore:
         if keep_last < 0:
             raise ValueError(f"keep_last must be >= 0, got {keep_last}")
         active = tuple(sorted(ACTIVE_STATUSES))
+        # A run another data root holds is left alone (MIGRATION_019): its
+        # files are not under this root, so the guards below would find
+        # none of them and the row would go while its files stayed behind.
+        # It is pruned when its project is open again.
         where_clause = (
             "status NOT IN "
-            f"({','.join('?' * len(active))}) AND rowid NOT IN "
+            f"({','.join('?' * len(active))}) "
+            "AND (data_root IS NULL OR data_root = ?) AND rowid NOT IN "
             "(SELECT rowid FROM exec_runs ORDER BY created_at DESC, rowid DESC LIMIT ?)"
         )
-        params = (*active, keep_last)
+        params = (*active, str(current_data_root()), keep_last)
 
         def _prune(
             conn: sqlite3.Connection,
