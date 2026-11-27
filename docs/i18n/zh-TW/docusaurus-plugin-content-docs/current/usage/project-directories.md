@@ -244,6 +244,49 @@ curl -s http://127.0.0.1:8000/api/apps/echo-svc/versions \
 作用中版本的 `GET /api/apps/echo-svc/openapi.json` 的 `info` 區塊也帶有
 `x-codefyui-git-commit` 與 `x-codefyui-git-dirty`。
 
+## 預設專案與切換專案 {/* #the-default-project-and-switching-projects */}
+
+### 伺服器開哪個專案 {/* #which-project-the-server-opens */}
+
+啟動時依序決定：
+
+1. 用 `--project` 或 `CODEFYUI_PROJECT_DIR` 指定的專案。
+2. 設了 `CODEFYUI_GRAPHS_DIR` 時：平面模式。
+3. 上次開著的專案（`<user data>/projects.json`）。
+4. `backend/data/graphs` 裡還有專案功能推出前的圖時：平面模式。什麼都不搬；專案 chip 會提供複製到專案的選項（見下方）。
+5. 以上皆非：開**預設專案** `~/CodefyUI-Projects/workspace`（Windows 是 `%USERPROFILE%\CodefyUI-Projects\workspace`），
+   第一次會建立並 `git init`。`CODEFYUI_PROJECTS_ROOT` 可改變 `CodefyUI-Projects` 的位置；`CODEFYUI_DEFAULT_PROJECT=0` 關掉這一步。
+   如果 `workspace` 已存在、不是空的、又不是專案，就不去動它：伺服器維持平面模式並記一行警告。
+
+### 專案 chip {/* #the-project-chip */}
+
+工具列左側的 chip 顯示目前的專案、git 分支，有未提交的變更時多一個點。它的選單可以開啟最近的專案、開啟資料夾（**開啟資料夾…**）、
+新增專案（**新增專案…**，建在專案根目錄並 `git init`）或 clone（**從 git URL clone…**，只接受 https，clone 到專案根目錄下與 repository 同名的資料夾）。
+平面模式下顯示**沒有專案**；如果有專案功能推出前的圖，會提供把它們連同用到的 models、images、media 檔案一起複製到專案，對話框列出每個檔案的大小。
+全部是複製，不會搬移。
+
+切換會重新載入頁面。每個專案有自己的分頁（見[分頁與持久化](./tabs-persistence)）；切換前會列出未存檔的分頁，它們會留在你離開的那個專案。
+
+**以下情況會拒絕切換**（訊息會說明是什麼在忙）：有執行中、排隊中或正在送出的 run；有 study 在跑；正在安裝外掛或套件包；
+Source Control 有 git 操作進行中；另一個切換正在進行；或有已連線的 worker 用自己的資料夾宣告了這台伺服器的 mount label（`--mount data=...`）——
+先停掉那個 worker、切換，再用新專案的資料夾重新啟動它。
+
+**其他視窗。** 還停在舊專案的視窗，在你回到它時（或它要存檔、執行時）會發現專案已經換了，並提供重新載入。
+
+**run 與 app 屬於它們的專案。** 執行清單預設列出這個專案的 run；**所有專案**列出全部。其他專案的 run 保留紀錄，
+但它的檔案（checkpoint、TensorBoard 紀錄、worker 上傳的檔案）只有在那個專案開著時才拿得到，在那之前也不會被保留政策清掉。
+從某個專案發佈的 app 版本，只有在那個專案開著時才會執行（否則回 409 `app_project_not_open`）。studies、sweeps 與 apps 的清單目前還沒有依專案篩選。
+
+### 專案的 `.env` {/* #the-projects-env */}
+
+這個安裝自己建立的專案（預設專案、**新增專案**、匯入）以及用 `--project` 指定的專案，照舊載入 `.env`。
+其他你開啟的資料夾和 clone 下來的專案，編輯器會先列出變數**名稱**（從不顯示值）並詢問。答案會依檔案內容記在 `<user data>/trust.json`；
+檔案改了就會再問一次。拒絕時專案照常開啟，只是沒有那些變數。
+
+有些名稱在執行期開啟專案時永遠不載入，因為它們會改變伺服器執行程式的方式：`PATH`、`PYTHON*`、`LD_*`、`DYLD_*`、`GIT_*`、`SSH_*`、
+`CODEFYUI_*`、`HOME`、`USERPROFILE`、`SHELL`、`COMSPEC`。另外有些函式庫只在啟動時讀一次設定（`CUDA_VISIBLE_DEVICES`、`HF_HOME` 與其他 `HF_*`、
+`TORCH_HOME`、`OMP_NUM_THREADS` 等）：切換後編輯器會說明哪些要重新啟動伺服器才會生效。
+
 ## 遷移既有的扁平 graphs 目錄 {/* #migrating-an-existing-flat-graphs-dir */}
 
 如果你用的是舊的「[版本控管你的 graphs](/usage/version-control-graphs)」做法
@@ -257,7 +300,7 @@ cdui project init my-service --adopt /path/to/old-graphs
 
 ## 注意事項與限制（v1） {/* #notes-and-limits-v1 */}
 
-- 每個伺服器實例一個專案（編輯器內還沒有專案切換器）。
+- 一台伺服器同時只開一個專案；用專案 chip 切換（見上方）。
 - `DB_PATH`、custom nodes 與[匯出的預設組合](/advanced/presets#creating-your-own)仍由整個安裝共用；
   [plugins](/advanced/plugins) 才是可攜的機制（在 manifest 中以 SHA 釘選）。
 - `assets/data/` 是相對的 `Dataset` 或 `FileReader` 路徑所解析到的位置。
