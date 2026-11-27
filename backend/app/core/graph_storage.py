@@ -102,6 +102,17 @@ class LayoutOrphanExists(GraphStorageError):
     """A rename target whose layout file outlived its graph."""
 
 
+@dataclass(frozen=True)
+class ConvertResult:
+    """What ``GraphStore.convert`` did to one graph: ``"converted"`` (from
+    *old* to *new*, paths relative to the project) or ``"unchanged"``."""
+
+    stem: str
+    status: str
+    old: str = ""
+    new: str = ""
+
+
 @dataclass
 class SaveResult:
     """What a save did: the graph's file or folder, the files written and
@@ -497,6 +508,101 @@ class GraphStore:
         return SaveResult(folder, written=written,
                           deleted=[str(folder / rel) for rel in deleted],
                           dropped=dropped)
+
+    def convert(self, stem: str, to: str) -> "ConvertResult":
+        """Rewrite graph *stem* in the form *to* (``"dir"`` or ``"file"``),
+        verify the new form reads back as the same graph, and only then
+        remove the old form. On any failure the old form is left (or put
+        back) exactly as it was and the new one removed.
+
+        Refuses a folder that needs repairs and a graph with leftovers a
+        folder cannot hold: both are fixed by opening and saving the graph,
+        where the editor says what changes.
+        """
+        if not self.project:
+            raise GraphStorageError(stem, "only a project's graphs can be migrated")
+        kind = self.storage_of(stem)
+        if kind is None:
+            raise GraphNotFound(stem)
+        if kind == to:
+            return ConvertResult(stem, "unchanged")
+        folder, logic_path = self.folder(stem), self.logic_path(stem)
+        legacy_path = self.graphs_dir / f"{stem}.json"
+        layout_path = self.layout_path(stem)
+        if kind == "dir":
+            logic, repairs = self.read_folder(stem)
+            if repairs:
+                raise GraphStorageError(stem, (
+                    f"Graph '{stem}' needs {len(repairs)} repair(s) before it can "
+                    "be migrated; open it in the editor and save it, or run "
+                    "`cdui project validate` to list them"))
+        payload = self.read(stem)
+        payload.pop("storage_repairs", None)
+        payload.pop("layout_missing", None)
+        expected_logic, expected_layout = split_graph(payload)
+        if to == "dir":
+            expected_logic, dropped = prepare_for_folder(expected_logic)
+            if dropped:
+                raise GraphStorageError(stem, (
+                    f"Graph '{stem}' has {len(dropped)} wire(s) a folder cannot "
+                    "keep (" + "; ".join(dropped) + "). Open it in the editor and "
+                    "save it once, then migrate"))
+
+        # Everything the old form is, kept in memory to put back.
+        backup: dict[Path, bytes] = {}
+        for path in (logic_path, legacy_path, layout_path):
+            if path.is_file():
+                backup[path] = path.read_bytes()
+        if kind == "dir":
+            for rel, data in read_tree(folder).items():
+                backup[folder / rel] = data
+        layout_existed = layout_path.is_file()
+
+        def restore() -> None:
+            if to == "dir":
+                _shutil.rmtree(folder, ignore_errors=True)
+            else:
+                logic_path.unlink(missing_ok=True)
+            for path, data in backup.items():
+                _atomic_write_bytes(path, data)
+            if not layout_existed:
+                layout_path.unlink(missing_ok=True)
+
+        try:
+            if to == "dir":
+                files = explode(expected_logic, None, dir_len=len(f"graphs/{stem}/"),
+                                requires=derive_requires(expected_logic, None))
+                sync_tree(folder, files, {})
+                _atomic_write_bytes(layout_path, (json.dumps(
+                    expected_layout, indent=2) + "\n").encode("utf-8"))
+                back, back_repairs = implode(read_tree(folder))
+            else:
+                write_graph_pair(logic_path, layout_path, payload)
+                back = json.loads(logic_path.read_text(encoding="utf-8"))
+                back_repairs = []
+            back_layout = json.loads(layout_path.read_text(encoding="utf-8"))
+            ok = back == expected_logic and not back_repairs \
+                and back_layout == expected_layout
+        except (OSError, ValueError, LookupError) as exc:
+            restore()
+            raise GraphStorageError(stem, f"Graph '{stem}' was not migrated: {exc}; "
+                                    "it is unchanged") from None
+        if not ok:
+            restore()
+            raise GraphStorageError(stem, (
+                f"Graph '{stem}' did not read back the same in the new form; "
+                "it is unchanged"))
+        # Verified: the old form goes.
+        if to == "dir":
+            logic_path.unlink(missing_ok=True)
+            legacy_path.unlink(missing_ok=True)
+        else:
+            _shutil.rmtree(folder)
+        return ConvertResult(stem, "converted",
+                             old=f"graphs/{stem}/" if kind == "dir" else
+                             f"graphs/{(logic_path if logic_path in backup else legacy_path).name}",
+                             new=f"graphs/{stem}/" if to == "dir" else
+                             f"graphs/{logic_path.name}")
 
     def rename(self, src_stem: str, dst_stem: str, *, new_name: str,
                src_display: str | None = None,

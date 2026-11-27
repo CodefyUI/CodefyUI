@@ -2,7 +2,7 @@
 scripts/dev.py's _dispatch_project_subcommand hop, so `import app.*` works.
 
 This module mirrors scripts/plugins.py: a build_parser() with subcommands, a
-main(argv) that dispatches to args._func. This file ships `init`, `validate`,
+main(argv) that dispatches to args._func. This file ships `init`, `validate`, `migrate`,
 `freeze`, `restore`, and `publish`.
 """
 
@@ -421,6 +421,79 @@ def _render_manifest(manifest: dict, pins: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _set_manifest_graph_format(manifest_path: Path, fmt: str) -> None:
+    """Point ``[storage] graph_format`` at *fmt*, touching nothing else."""
+    import re
+
+    text = manifest_path.read_text(encoding="utf-8")
+    line = f'graph_format = "{fmt}"'
+    if re.search(r"(?m)^\s*graph_format\s*=.*$", text):
+        text = re.sub(r"(?m)^\s*graph_format\s*=.*$", line, text, count=1)
+    elif re.search(r"(?m)^\[storage\]\s*$", text):
+        text = re.sub(r"(?m)^\[storage\]\s*$", f"[storage]\n{line}", text, count=1)
+    else:
+        text = text.rstrip("\n") + f"\n\n[storage]\n{line}\n"
+    manifest_path.write_bytes(text.encode("utf-8"))
+
+
+def cmd_migrate(args: argparse.Namespace) -> int:
+    """Rewrite graphs in the other storage form, verifying each one reads
+    back the same before its old form is removed."""
+    proj = Path(args.dir).expanduser().resolve()
+    to = args.to
+    section(f"轉換專案的圖為 {to}：{proj}", f"Migrating graphs to {to}: {proj}")
+    manifest_path = proj / MANIFEST_FILENAME
+    if not manifest_path.exists():
+        err(f"找不到 manifest：{manifest_path}", f"Manifest not found: {manifest_path}")
+        return 1
+
+    from app.core.graph_storage import GraphAmbiguityError, GraphStorageError, GraphStore
+
+    store = GraphStore.for_project(proj)
+    try:
+        graphs = store.stems()
+    except GraphAmbiguityError as e:
+        err(str(e), str(e))
+        return 1
+    requested = getattr(args, "graph", None)
+    if requested:
+        missing = [n for n in requested if n not in graphs]
+        if missing:
+            err(f"graphs/ 沒有這些 graph：{', '.join(missing)}",
+                f"No such graph in graphs/: {', '.join(missing)}")
+            return 1
+        graphs = [n for n in graphs if n in set(requested)]
+
+    failed = converted = 0
+    for stem in graphs:
+        try:
+            result = store.convert(stem, to)
+        except GraphStorageError as e:
+            failed += 1
+            err(f"未轉換 {stem}：{e}", f"NOT MIGRATED {stem}: {e}")
+            continue
+        if result.status == "converted":
+            converted += 1
+            ok(f"{result.old} → {result.new}", f"{result.old} -> {result.new}")
+        else:
+            ok(f"{stem}：已經是 {to}", f"{stem}: already {to}")
+
+    if not requested and not failed:
+        # The whole project moved, so new graphs follow it.
+        _set_manifest_graph_format(manifest_path, to)
+        ok(f"manifest：[storage] graph_format = \"{to}\"",
+           f"manifest: [storage] graph_format = \"{to}\"")
+    if converted:
+        warn("git 會把轉換看成刪檔加新檔：轉換之後 `git log --follow` 接不到轉換前的歷史。"
+             "要看之前的歷史，用舊路徑查，例如 `git log -- graphs/<name>.graph.json`。"
+             "請把這次轉換單獨 commit。",
+             "git sees the migration as files deleted and files added, so "
+             "`git log --follow` does not reach history from before it. For "
+             "that history ask for the old path, e.g. `git log -- "
+             "graphs/<name>.graph.json`. Commit the migration on its own.")
+    return 1 if failed else 0
+
+
 def cmd_freeze(args: argparse.Namespace) -> int:
     proj = Path(args.dir).expanduser().resolve()
     manifest_path = proj / MANIFEST_FILENAME
@@ -673,6 +746,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_val.add_argument("--strict", action="store_true",
                        help="treat missing/mismatched plugin pins as errors")
     p_val.set_defaults(_func=cmd_validate)
+
+    p_mig = sub.add_parser(
+        "migrate", help="Store graphs as folders (dir) or single files (file)")
+    p_mig.add_argument("dir", help="project directory")
+    p_mig.add_argument("--to", choices=("dir", "file"), default="dir",
+                       help="the storage form to convert to (default: dir)")
+    p_mig.add_argument("--graph", action="append", default=None, metavar="NAME",
+                       help="migrate only the named graph (repeatable); without "
+                            "it every graph moves and the manifest's "
+                            "[storage] graph_format is set to match")
+    p_mig.set_defaults(_func=cmd_migrate)
 
     p_freeze = sub.add_parser("freeze", help="Write installed github plugin pins into the manifest")
     p_freeze.add_argument("dir", help="project directory")
