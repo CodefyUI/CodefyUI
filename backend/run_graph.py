@@ -95,7 +95,10 @@ async def run(
 
     from app.core.graph_storage import load_graph_document
 
-    graph = load_graph_document(path)
+    repairs: list = []
+    graph = load_graph_document(path, repairs)
+    for repair in repairs:
+        logger.warning("Repaired while reading %s: %s", repair.path, repair.detail)
     nodes = graph.get("nodes", [])
     edges = graph.get("edges", [])
     name = graph.get("name", path.stem)

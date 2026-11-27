@@ -102,14 +102,22 @@ function GraphRow({
   // as something no date can be made of -- a row with no date on it says more
   // than a row with the wrong one.
   const when = graph.modified === undefined ? '' : relativeTime(graph.modified, locale);
-  const meta = when === '' ? '' : t('graphs.modified', { when });
+  // A graph a newer CodefyUI stored in a layout this one cannot read is
+  // listed, so it is not invisible, but its row opens nothing and the meta
+  // line says why. Delete stays: it removes the folder without reading it.
+  const newer = graph.newer === true;
+  const meta = newer
+    ? t('graphs.newerStorage')
+    : when === '' ? '' : t('graphs.modified', { when });
   const open = t('graphs.open');
 
   // Two items, and neither of them is another way to open the graph: the row
   // itself is the only door in, so the menu holds what is left -- the two
   // things that change the FILE rather than what is on screen.
   const items: ActionMenuItem[] = [
-    { id: 'rename', label: t('graphs.rename'), onSelect: () => onRename(graph) },
+    ...(newer
+      ? []
+      : [{ id: 'rename', label: t('graphs.rename'), onSelect: () => onRename(graph) }]),
     {
       id: 'delete',
       label: t('graphs.delete'),
@@ -139,6 +147,7 @@ function GraphRow({
         // as part of that name.
         aria-label={`${open} ${graph.name}`}
         aria-describedby={describedBy === '' ? undefined : describedBy}
+        disabled={newer}
         onClick={() => onOpen(graph)}
       >
         <span className={tabStyles.rowName}>{graph.name}</span>

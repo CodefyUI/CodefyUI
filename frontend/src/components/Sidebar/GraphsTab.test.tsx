@@ -225,6 +225,16 @@ describe('GraphsTab list', () => {
     expect(await screen.findByText('Modified 1 hour ago')).toBeTruthy();
   });
 
+  it('lists a graph stored by a newer CodefyUI but will not open it', async () => {
+    mockedRest.listGraphs.mockResolvedValue([
+      graph({ name: 'future', file: 'future', newer: true }),
+    ]);
+    render(<GraphsTab />);
+    const row = await screen.findByRole('button', { name: 'Open future' });
+    expect((row as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/newer CodefyUI/)).toBeTruthy();
+  });
+
   it('marks the row the active tab is bound to', async () => {
     useTabStore.getState().setCurrentGraphFile('beta', 'beta');
     mockedRest.listGraphs.mockResolvedValue([

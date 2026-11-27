@@ -19,12 +19,15 @@ from ..core.node_base import ParamType, is_param_visible
 from ..core.node_registry import registry
 from ..core.preset_registry import preset_registry
 from ..core.graph_storage import (
+    FolderAmbiguityError,
     GraphAmbiguityError,
     GraphExists,
     GraphNotFound,
     GraphStore,
     GraphUnreadable,
     LayoutOrphanExists,
+    NewerStorageVersion,
+    StorageCheckFailed,
     sanitize_graph_name,
 )
 from ..core.secret_params import (
@@ -248,8 +251,23 @@ async def save_graph(graph: GraphSaveRequest):
         payload.get("subgraphs", []),
         preset_fallback=preset_fallback,
     )
-    path = _store().write(safe_target, payload)
-    return {"message": "Graph saved", "path": str(path), "file": safe_target}
+    try:
+        result = _store().write(safe_target, payload)
+    except FolderAmbiguityError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except NewerStorageVersion as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except StorageCheckFailed as e:
+        # The folder would not have read back as the graph being saved:
+        # refused before a single file was written.
+        logger.error("save refused: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+    response = {"message": "Graph saved", "path": str(result.path), "file": safe_target}
+    if result.dropped:
+        # Leftovers a folder cannot hold (an edge to a missing node, a second
+        # edge between the same ports): said to the user, not silently lost.
+        response["dropped"] = result.dropped
+    return response
 
 
 @router.get("/load/{name}")
@@ -260,6 +278,8 @@ async def load_graph(name: str):
         raise HTTPException(status_code=409, detail=str(e))
     except GraphNotFound:
         raise HTTPException(status_code=404, detail=f"Graph '{name}' not found")
+    except NewerStorageVersion as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except GraphUnreadable as e:
         raise HTTPException(status_code=500, detail=str(e))
     _warn_if_newer_format(name, data)
@@ -334,6 +354,8 @@ async def rename_graph(req: RenameGraphRequest):
         raise HTTPException(
             status_code=404, detail=f"Graph '{req.from_name}' not found")
     except (GraphExists, LayoutOrphanExists) as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except NewerStorageVersion as e:
         raise HTTPException(status_code=409, detail=str(e))
     except GraphUnreadable as e:
         # /list silently skips a file it cannot parse, so the panel never

@@ -767,6 +767,13 @@ export interface GraphDocument {
    * caller, so a reader cannot forget the gate (ID8, #200 item 4).
    */
   formatVersion?: unknown;
+  /**
+   * How many things the server had to repair to read a graph stored as a
+   * folder (an edge to a node whose file is gone, two files with one id...).
+   * Nothing was written back: the install says so once and leaves the tab
+   * unsaved, so the repaired graph reaches disk only when the user saves.
+   */
+  storageRepairs?: number;
 }
 
 /** One document write, as `commitDocument` applies it. */
@@ -4650,6 +4657,15 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         ...(name ? { name } : {}),
       })),
     });
+    // Repaired on read (a folder graph): said once, and the tab stays unsaved
+    // so the repair is a change the user saves, never one made behind them.
+    if (doc.storageRepairs && doc.storageRepairs > 0) {
+      get().forgetTabMatch([tabId]);
+      useToastStore.getState().addToast(
+        useI18n.getState().t('graphs.repairedOnLoad', { count: doc.storageRepairs }),
+        'warning',
+      );
+    }
     // A graph saved before an input took one wire (#658) opens as it is;
     // Run refuses it, so say so now and offer the fix.
     const fanIns = fanInInputs(doc.edges);

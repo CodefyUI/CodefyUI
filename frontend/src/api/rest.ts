@@ -1047,6 +1047,11 @@ export interface GraphSaveResult {
    * `renameGraph`'s caller in the Graphs panel already falls back across.
    */
   file?: string;
+  /**
+   * What a folder save could not keep: an edge to a node that is not in the
+   * graph, or a second edge between the same two ports. One line each.
+   */
+  dropped?: string[];
 }
 
 /**
@@ -1176,6 +1181,11 @@ export interface SavedGraphSummary {
    * order, not a crash.
    */
   modified?: number;
+  /**
+   * Stored by a newer CodefyUI in a layout this one cannot read: listed so
+   * it is not invisible, but it cannot be opened, renamed or saved over.
+   */
+  newer?: boolean;
 }
 
 export async function listGraphs(): Promise<SavedGraphSummary[]> {
