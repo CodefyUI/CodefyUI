@@ -21,7 +21,8 @@ from pathlib import Path
 from fastapi import APIRouter
 
 from ..config import settings
-from ..core.project import GraphAmbiguityError, collect_graph_files, read_project_manifest
+from ..core.graph_storage import GraphStore
+from ..core.project import read_project_manifest
 from ..core.skills import registry
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
@@ -36,15 +37,10 @@ def _project_name(project_dir: Path) -> str:
     return name if isinstance(name, str) and name.strip() else project_dir.name
 
 
-def _graph_names(graphs_dir: Path) -> list[str]:
-    try:
-        return [base for base, _path in collect_graph_files(graphs_dir)]
-    except GraphAmbiguityError:
-        # Two files claim one name; list the names anyway, which is all an
-        # agent needs to know here. Opening that graph reports the conflict.
-        names = {p.name[:-len(".graph.json")] if p.name.endswith(".graph.json") else p.stem
-                 for p in graphs_dir.glob("*.json") if not p.name.endswith(".layout.json")}
-        return sorted(names)
+def _graph_names() -> list[str]:
+    # Lenient: when two files claim one name, list the name anyway, which is
+    # all an agent needs to know here. Opening that graph reports the conflict.
+    return GraphStore.current().stems(strict=False)
 
 
 def _instructions(project_dir: Path) -> dict | None:
@@ -83,7 +79,7 @@ def agent_context() -> dict:
         project = {
             "dir": str(project_dir),
             "name": _project_name(project_dir),
-            "graphs": _graph_names(settings.GRAPHS_DIR),
+            "graphs": _graph_names(),
         }
         instructions = _instructions(project_dir)
     skills = [

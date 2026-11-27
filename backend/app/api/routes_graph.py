@@ -1,4 +1,3 @@
-import json
 import logging
 import re
 from pathlib import Path
@@ -19,11 +18,14 @@ from ..core.graph_engine import (
 from ..core.node_base import ParamType, is_param_visible
 from ..core.node_registry import registry
 from ..core.preset_registry import preset_registry
-from ..core.project import (
+from ..core.graph_storage import (
     GraphAmbiguityError,
-    _atomic_write,
-    collect_graph_files,
-    resolve_graph_file,
+    GraphExists,
+    GraphNotFound,
+    GraphStore,
+    GraphUnreadable,
+    LayoutOrphanExists,
+    sanitize_graph_name,
 )
 from ..core.secret_params import (
     scrub_graph_secrets,
@@ -43,8 +45,8 @@ logger = logging.getLogger(__name__)
 
 
 def _sanitize_name(name: str) -> str:
-    """Filesystem-safe graph name: every char outside [alnum, '-', '_'] -> '_'."""
-    return "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
+    """Filesystem-safe graph name (``graph_storage.sanitize_graph_name``)."""
+    return sanitize_graph_name(name)
 
 
 def _project_mode() -> bool:
@@ -68,89 +70,26 @@ def _reserved_graph_name(name: str) -> bool:
     return name.endswith(".graph") or name.endswith(".layout")
 
 
-def _graph_logic_path(name: str) -> Path:
-    """Canonical write target for a graph's LOGIC file.
+def _store() -> GraphStore:
+    """The saved graphs this server reads and writes right now."""
+    return GraphStore.current()
 
-    Non-project: `<GRAPHS_DIR>/<name>.json` (byte-for-byte legacy).
-    Project:     `<GRAPHS_DIR>/<name>.graph.json`.
-    """
-    safe = _sanitize_name(name)
-    if not _project_mode():
-        return settings.GRAPHS_DIR / f"{safe}.json"
-    return settings.GRAPHS_DIR / f"{safe}.graph.json"
+
+def _graph_logic_path(name: str) -> Path:
+    """Where a save writes the logic file of graph *name*."""
+    return _store().logic_path(_sanitize_name(name))
 
 
 def _graph_layout_path(name: str) -> "Path | None":
     """Project-mode LAYOUT file path, else None (non-project has no layout)."""
-    if not _project_mode():
-        return None
-    return settings.LAYOUT_DIR / f"{_sanitize_name(name)}.layout.json"
-
-
-def _existing_graph_file(stem: str) -> "Path | None":
-    """The on-disk LOGIC file already occupying an ALREADY-SANITIZED *stem*,
-    or None when nothing is there.
-
-    Non-project: `<GRAPHS_DIR>/<stem>.json`.
-    Project: canonical `<stem>.graph.json` first, then legacy `<stem>.json` --
-    the same preference order a read resolves in, so the file named in a
-    refusal is the file the user would have opened.
-
-    Deliberately NOT `resolve_graph_file`, even though it encodes that same
-    preference: it RAISES GraphAmbiguityError when both project forms exist,
-    and this function is only ever asked "is anything already there?". That
-    question has an unambiguous answer in the both-forms case -- yes -- and
-    both forms of one base is a state an ordinary `git checkout` of an older
-    commit produces. Routing /save's guard through the raising helper would
-    turn a save that works today into a failure, on a graph the user can still
-    see in the panel, over an ambiguity the save itself resolves (the pair
-    write unlinks the legacy half).
-    """
-    canonical = settings.GRAPHS_DIR / (
-        f"{stem}.graph.json" if _project_mode() else f"{stem}.json")
-    if canonical.exists():
-        return canonical
-    legacy = settings.GRAPHS_DIR / f"{stem}.json"
-    if _project_mode() and legacy.exists():
-        return legacy
-    return None
-
-
-def _stored_graph_title(path: Path, fallback: str) -> str:
-    """The title a saved graph file calls itself by, or *fallback*.
-
-    Used to tell the user WHICH graph a save is about to replace, so every
-    way of failing to find a title degrades to the stem rather than to an
-    error: the file is on disk and about to be overwritten either way, and a
-    hand-edited or half-written file is exactly the case where the warning
-    matters most. `/list` skips such a file for the same reason it cannot
-    show a name for it.
-    """
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return fallback
-    if not isinstance(data, dict):
-        return fallback
-    name = data.get("name")
-    return name if isinstance(name, str) and name else fallback
+    return _store().layout_path(_sanitize_name(name))
 
 
 def _graph_path(name: str) -> Path:
-    """Resolve a graph name to the on-disk file to READ.
-
-    Non-project: `<GRAPHS_DIR>/<name>.json` (existence not checked — callers
-    guard with `.exists()`; identical to legacy behavior).
-    Project: the shared canonical-vs-legacy rule
-    (app.core.project.resolve_graph_file) — canonical `<name>.graph.json`
-    when present, legacy `<name>.json` accepted, GraphAmbiguityError when
-    BOTH exist, and the canonical (non-existent) path when NEITHER does so
-    callers' 404 path still fires.
-    """
-    safe = _sanitize_name(name)
-    if not _project_mode():
-        return settings.GRAPHS_DIR / f"{safe}.json"
-    return resolve_graph_file(settings.GRAPHS_DIR, safe, display_name=name)
+    """The file a READ of graph *name* opens (``GraphStore.resolve``):
+    raises GraphAmbiguityError when both project forms exist, and returns
+    a non-existent path when the graph is not there."""
+    return _store().resolve(_sanitize_name(name), display_name=name)
 
 
 @router.post("/validate", response_model=GraphValidationResponse)
@@ -251,7 +190,8 @@ async def save_graph(graph: GraphSaveRequest):
     # you yet" -- the editor's first attempt -- and that is the one this
     # refuses. See `GraphSaveRequest.overwrite`.
     if graph.overwrite is False and not graph.file:
-        occupied = _existing_graph_file(safe_target)
+        store = _store()
+        occupied = store.existing(safe_target)
         if occupied is not None:
             # A dict detail, which FastAPI serves as {"detail": {...}}: the
             # client has to tell this apart from /load's and /list's own 409s
@@ -260,9 +200,8 @@ async def save_graph(graph: GraphSaveRequest):
             raise HTTPException(status_code=409, detail={
                 "error": "graph_exists",
                 "file": safe_target,
-                "name": _stored_graph_title(occupied, safe_target),
+                "name": store.title(safe_target, safe_target),
             })
-    settings.GRAPHS_DIR.mkdir(parents=True, exist_ok=True)
     payload = graph.model_dump()
     # The address is a property of the REQUEST, never of the graph: a file
     # that recorded where it lives would contradict itself the moment
@@ -309,53 +248,20 @@ async def save_graph(graph: GraphSaveRequest):
         payload.get("subgraphs", []),
         preset_fallback=preset_fallback,
     )
-    if _project_mode():
-        from ..core.project import write_graph_pair
-        logic_path = _graph_logic_path(target)
-        layout_path = _graph_layout_path(target)
-        legacy = settings.GRAPHS_DIR / f"{safe_target}.json"
-        write_graph_pair(logic_path, layout_path, payload, legacy_path=legacy)
-        return {
-            "message": "Graph saved",
-            "path": str(logic_path),
-            "file": safe_target,
-        }
-    path = _graph_path(target)
-    # `_atomic_write`, not `path.write_text`, and not only for crash safety.
-    # A bare write OPENS an existing directory entry, so on a
-    # case-insensitive filesystem (NTFS, APFS) saving "my graph" over a
-    # `My_Graph.json` left the entry spelled `My_Graph.json` while the
-    # server believed it had written `my_graph.json` -- after which /list
-    # reported a file nobody could address. `os.replace` REPLACES the entry,
-    # so its spelling is always the one the server computed. The project
-    # branch above has had this since spec 13; this branch was the odd one
-    # out. `json.dumps` is ASCII-only by default, so the bytes written are
-    # identical to what `write_text` wrote.
-    _atomic_write(path, json.dumps(payload, indent=2))
+    path = _store().write(safe_target, payload)
     return {"message": "Graph saved", "path": str(path), "file": safe_target}
 
 
 @router.get("/load/{name}")
 async def load_graph(name: str):
     try:
-        path = _graph_path(name)
+        data = _store().read(_sanitize_name(name), display_name=name)
     except GraphAmbiguityError as e:
         raise HTTPException(status_code=409, detail=str(e))
-    if not path.exists():
+    except GraphNotFound:
         raise HTTPException(status_code=404, detail=f"Graph '{name}' not found")
-    data = json.loads(path.read_text())
-    # Legacy single-file `<name>.json` (project or non-project) loads verbatim
-    # with embedded positions (spec 6.4); only the canonical pair is merged.
-    if _project_mode() and path.name.endswith(".graph.json"):
-        from ..core.project import merge_graph
-        layout_path = _graph_layout_path(name)
-        layout = None
-        if layout_path is not None and layout_path.exists():
-            try:
-                layout = json.loads(layout_path.read_text())
-            except (ValueError, OSError):
-                layout = None
-        data, _missing = merge_graph(data, layout)
+    except GraphUnreadable as e:
+        raise HTTPException(status_code=500, detail=str(e))
     _warn_if_newer_format(name, data)
     return data
 
@@ -372,47 +278,13 @@ def _warn_if_newer_format(name: str, data: dict) -> None:
 
 @router.get("/list")
 async def list_graphs():
-    settings.GRAPHS_DIR.mkdir(parents=True, exist_ok=True)
-    graphs = []
-    if not _project_mode():
-        for f in settings.GRAPHS_DIR.glob("*.json"):
-            try:
-                data = json.loads(f.read_text())
-                graphs.append({
-                    "name": data.get("name", f.stem),
-                    "file": f.stem,
-                    # Raw st_mtime (float epoch seconds), not an int: the
-                    # Graphs panel's default order is most-recent-first, and
-                    # truncating would shuffle two graphs saved within the
-                    # same second into an arbitrary order.
-                    "modified": f.stat().st_mtime,
-                })
-            except Exception:
-                continue
-        return graphs
-
-    # Project mode: the shared canonical-vs-legacy collection rule
-    # (app.core.project.collect_graph_files) — bases never leak the double
-    # suffix (spec ID7) and both-forms-present fails loudly naming both.
+    # Project mode applies the shared canonical-vs-legacy collection rule:
+    # stems never leak the double suffix, and a stem present in both forms
+    # fails loudly naming both.
     try:
-        pairs = collect_graph_files(settings.GRAPHS_DIR)
+        return _store().list()
     except GraphAmbiguityError as e:
         raise HTTPException(status_code=409, detail=str(e))
-    for base, f in pairs:
-        try:
-            data = json.loads(f.read_text())
-            graphs.append({
-                "name": data.get("name", base),
-                "file": base,
-                # The LOGIC file's mtime -- which is what collect_graph_files
-                # resolves to. The layout half is rewritten by every drag, so
-                # sorting on it would rank "somebody nudged a node" above
-                # "somebody rewired the graph".
-                "modified": f.stat().st_mtime,
-            })
-        except Exception:
-            continue
-    return graphs
 
 
 class RenameGraphRequest(BaseModel):
@@ -452,93 +324,21 @@ async def rename_graph(req: RenameGraphRequest):
                 "'.graph' or '.layout' collide with the project file split."
             ),
         )
+    safe_to = _sanitize_name(req.to)
     try:
-        src = _graph_path(req.from_name)
-        # Resolved rather than just probing the write target: this is what
-        # catches renaming a canonical pair onto a base that exists only in
-        # the legacy form (and the reverse), which would leave both forms of
-        # one base on disk -- the state GraphAmbiguityError exists to forbid.
-        dst_existing = _graph_path(req.to)
+        _store().rename(_sanitize_name(req.from_name), safe_to, new_name=req.to,
+                        src_display=req.from_name, dst_display=req.to)
     except GraphAmbiguityError as e:
         raise HTTPException(status_code=409, detail=str(e))
-    if not src.exists():
+    except GraphNotFound:
         raise HTTPException(
             status_code=404, detail=f"Graph '{req.from_name}' not found")
-    if dst_existing.exists() and dst_existing != src:
-        raise HTTPException(
-            status_code=409, detail=f"Graph '{req.to}' already exists")
-    # The layout half gets the same refusal, checked here so that -- like
-    # every check above it -- nothing has moved yet when it fires. A layout
-    # can outlive its graph (a `git checkout` of `graphs/` alone, a manual
-    # delete, a partial revert), and `Path.replace` overwrites the
-    # destination silently on POSIX and on Windows alike, so without this the
-    # orphan would be destroyed by a rename the logic half had waved through.
-    layout_src = _graph_layout_path(req.from_name)
-    layout_dst = _graph_layout_path(req.to)
-    if (
-        layout_dst is not None
-        and layout_dst != layout_src
-        and layout_dst.exists()
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"A layout file for '{req.to}' already exists without its "
-                "graph; remove or restore it before renaming onto that name."
-            ),
-        )
-
-    raw = src.read_text()
-    try:
-        data = json.loads(raw)
-    except ValueError:
-        data = None
-    if not isinstance(data, dict):
+    except (GraphExists, LayoutOrphanExists) as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except GraphUnreadable as e:
         # /list silently skips a file it cannot parse, so the panel never
-        # offers to rename one. Getting here means a hand-edited file: say so
-        # rather than answering a 500 from json.loads.
-        raise HTTPException(
-            status_code=400,
-            detail=f"Graph '{req.from_name}' is not a readable graph file",
-        )
-    data["name"] = req.to
-
-    safe_to = _sanitize_name(req.to)
-    # Rename into the form the file is ALREADY in: a legacy single-file graph
-    # stays legacy and upgrades to the pair on its next /save (spec 6.4/ID2).
-    # Splitting it here instead would mean re-deriving a layout from embedded
-    # positions, which is /save's job and needs the merged shape.
-    keeps_pair = _project_mode() and src.name.endswith(".graph.json")
-    dst = settings.GRAPHS_DIR / (
-        f"{safe_to}.graph.json" if keeps_pair else f"{safe_to}.json")
-
-    # project.py's own writer (imported at the top of this module, and now
-    # shared with /save) rather than a second tmp+os.replace here: spec 13's
-    # atomicity should stay one mechanism, and a truncated logic file is a
-    # lost graph.
-    #
-    # Move first, rewrite second. The other order leaves a file whose `name`
-    # disagrees with its filename when the move then fails; this one leaves a
-    # graph that is whole and loadable under its new name, only still titled
-    # the old one. The trailing newline is preserved exactly as found so a
-    # rename does not surface in a project's git diff as a last-line change.
-    if dst != src:
-        src.replace(dst)
-    _atomic_write(
-        dst, json.dumps(data, indent=2) + ("\n" if raw.endswith("\n") else ""))
-
-    # The layout file is keyed by base name, so leaving it behind would orphan
-    # it under a name no graph answers to any more. Moved for a legacy source
-    # too: if one exists beside a legacy file it is still that graph's. The
-    # destination was proved free above, so this move can only create a file.
-    if (
-        layout_src is not None
-        and layout_dst is not None
-        and layout_dst != layout_src
-        and layout_src.exists()
-    ):
-        layout_dst.parent.mkdir(parents=True, exist_ok=True)
-        layout_src.replace(layout_dst)
+        # offers to rename one. Getting here means a hand-edited file.
+        raise HTTPException(status_code=400, detail=str(e))
 
     # `file` is what the caller addresses the graph by from here on -- a
     # client holding the old base (the editor's bound graph, say) has no other
@@ -557,25 +357,14 @@ async def delete_graph(name: str):
     should see.
     """
     try:
-        path = _graph_path(name)
+        # Never guess which of two files the user meant, least of all when
+        # the answer decides which one is gone: ambiguity is the same 409
+        # /load gives.
+        removed = _store().delete(_sanitize_name(name), display_name=name)
     except GraphAmbiguityError as e:
-        # The same refusal /load gives. Never guess which of the two files the
-        # user meant, least of all when the answer decides which one is gone.
         raise HTTPException(status_code=409, detail=str(e))
-    if not path.exists():
+    except GraphNotFound:
         raise HTTPException(status_code=404, detail=f"Graph '{name}' not found")
-    removed = [path]
-    path.unlink()
-    if _project_mode():
-        # `path` IS the legacy single `<name>.json` whenever that is the form
-        # on disk (resolve_graph_file returns it, and the both-forms case
-        # raised above), so the legacy file needs no unlink of its own. The
-        # layout half does: it is not a graph file, so it never takes part in
-        # that resolution at all.
-        layout_path = _graph_layout_path(name)
-        if layout_path is not None and layout_path.exists():
-            layout_path.unlink()
-            removed.append(layout_path)
     return {"message": "Graph deleted", "removed": [str(p) for p in removed]}
 
 

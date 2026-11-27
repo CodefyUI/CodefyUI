@@ -45,7 +45,6 @@ from app.core.project import (
     GraphAmbiguityError,
     adopt_graphs,
     check_pin_issues,
-    collect_graph_files,
     init_project_repo,
     scaffold_project,
 )
@@ -115,7 +114,7 @@ def _init_registries_like_server() -> None:
         preset_registry.discover(pdir / "presets", registry)
 
 
-def _validate_one_graph(path: Path, base: str) -> list[str]:
+def _validate_one_graph(store, base: str) -> list[str]:
     """The publish six-gate pre-flight, IN PUBLISH ORDER (routes_apps): secret
     -> contract -> entry -> wiring -> validate. Returns problems (empty=pass)."""
     from app.core import api_contract
@@ -128,9 +127,11 @@ def _validate_one_graph(path: Path, base: str) -> list[str]:
     from app.core.project import FORMAT_VERSION
     from app.core.secret_params import find_secret_violations
 
+    from app.core.graph_storage import GraphStorageError
+
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (ValueError, OSError) as e:
+        data = store.read_logic(base)
+    except GraphStorageError as e:
         return [f"unreadable: {e}"]
     nodes = data.get("nodes", [])
     edges = data.get("edges", [])
@@ -262,9 +263,12 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
     _init_registries_like_server()
 
+    from app.core.graph_storage import GraphStore
+
+    store = GraphStore.for_project(proj)
     try:
-        # Shared canonical-vs-legacy collection rule (app.core.project).
-        graphs = collect_graph_files(proj / "graphs")
+        # Shared canonical-vs-legacy collection rule (app.core.graph_storage).
+        graphs = store.stems()
     except GraphAmbiguityError as e:
         err(str(e), str(e))
         return 1
@@ -275,20 +279,19 @@ def cmd_validate(args: argparse.Namespace) -> int:
     # gate into a vacuous pass.
     requested = getattr(args, "graph", None)
     if requested:
-        by_name = dict(graphs)
-        missing = [n for n in requested if n not in by_name]
+        missing = [n for n in requested if n not in graphs]
         if missing:
-            avail = ", ".join(n for n, _ in graphs) or "(none)"
+            avail = ", ".join(graphs) or "(none)"
             err(f"graphs/ 沒有這些 graph：{', '.join(missing)}（現有：{avail}）",
                 f"No such graph in graphs/: {', '.join(missing)} "
                 f"(available: {avail})")
             return 1
         wanted = set(requested)
-        graphs = [(n, p) for n, p in graphs if n in wanted]
+        graphs = [n for n in graphs if n in wanted]
 
     all_ok = True
-    for base, path in graphs:
-        problems = _validate_one_graph(path, base)
+    for base in graphs:
+        problems = _validate_one_graph(store, base)
         if problems:
             all_ok = False
             err(f"FAIL {base}: {problems[0]}", f"FAIL {base}: {problems[0]}")

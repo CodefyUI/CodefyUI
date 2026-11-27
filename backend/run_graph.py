@@ -13,7 +13,6 @@ Usage:
 
 import argparse
 import asyncio
-import json
 import logging
 import sys
 import time
@@ -94,7 +93,9 @@ async def run(
         logger.error("File not found: %s", path)
         sys.exit(1)
 
-    graph = json.loads(path.read_text(encoding="utf-8"))
+    from app.core.graph_storage import load_graph_document
+
+    graph = load_graph_document(path)
     nodes = graph.get("nodes", [])
     edges = graph.get("edges", [])
     name = graph.get("name", path.stem)
