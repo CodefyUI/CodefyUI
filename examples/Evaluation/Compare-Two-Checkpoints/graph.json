@@ -363,7 +363,7 @@
       },
       "data": {
         "params": {
-          "code": "import torch\n\ndef run(inputs, params):\n    # Test images the two checkpoints label differently, side by side.\n    early = inputs[\"in1\"].argmax(dim=1)\n    late = inputs[\"in2\"].argmax(dim=1)\n    x = inputs[\"in3\"]\n    truth = torch.tensor([int(v) for v in inputs[\"in4\"]])\n    differ = (early != late).nonzero().flatten()\n    fixed = int(((early != truth) & (late == truth)).sum())\n    broke = int(((early == truth) & (late != truth)).sum())\n    shown = x[differ[:12]].reshape(-1, 8, 8)\n    grid = torch.cat(list(shown), dim=1) if len(shown) else torch.zeros(8, 8)\n    report = (f\"{len(differ)} test images change label; the later checkpoint fixes {fixed} \"\n              f\"and breaks {broke}\")\n    return {\"out1\": grid, \"out2\": report}\n",
+          "code": "import torch\n\ndef run(inputs, params):\n    # Test images the two checkpoints label differently, side by side.\n    early = inputs[\"in1\"].argmax(dim=1)\n    late = inputs[\"in2\"].argmax(dim=1)\n    x = inputs[\"in3\"]\n    truth = torch.tensor([int(v) for v in inputs[\"in4\"]], device=device)\n    differ = (early != late).nonzero().flatten()\n    fixed = int(((early != truth) & (late == truth)).sum())\n    broke = int(((early == truth) & (late != truth)).sum())\n    shown = x[differ[:12]].reshape(-1, 8, 8)\n    grid = torch.cat(list(shown), dim=1) if len(shown) else torch.zeros(8, 8, device=device)\n    report = (f\"{len(differ)} test images change label; the later checkpoint fixes {fixed} \"\n              f\"and breaks {broke}\")\n    return {\"out1\": grid, \"out2\": report}\n",
           "input_ports": 4,
           "output_ports": 2,
           "input_types": "TENSOR,TENSOR,TENSOR,LIST",

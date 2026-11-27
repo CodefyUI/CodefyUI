@@ -98,10 +98,13 @@ PARITY_EXAMPLES = (
     "Classical/Iris-Sklearn-KNN",
     "Classical/KFold-Cross-Validation",
     "Classical/Tabular-Iris-Pipeline",
+    "Data/Dataset-Inspection",
+    "Data/Split-And-Leak-Check",
     "Diffusion/Forward-Process",
     "Diffusion/Mini-UNet-Compact",
     "Diffusion/Toy-Sampling",
     "Diffusion/Train-DDPM-Blobs",
+    "LLM/RAG-Retrieval-Hit-Rate",
     "LLM/Word-Embedding-Analogy",
     "Model_Architecture/BERT-Encoder-Transformer",
     "Model_Architecture/BiGRU-SpeechRecognition-RNN",
@@ -141,6 +144,9 @@ TOO_SLOW_FOR_CI: dict[str, str] = {}
 FILES_BESIDE_THE_SCRIPT = {
     "data/samples/iris.csv": _BACKEND_DIR / "data" / "samples" / "iris.csv",
     "test_digit.png": _BACKEND_DIR / "data" / "images" / "test_digit.png",
+    "data/samples/digits.csv": _BACKEND_DIR / "data" / "samples" / "digits.csv",
+    **{f"data/samples/rag/{doc.name}": doc
+       for doc in sorted((_BACKEND_DIR / "data" / "samples" / "rag").glob("*.md"))},
 }
 
 #: Used on both sides when an example carries no seed of its own.
@@ -158,7 +164,12 @@ def _load(example: str) -> dict:
 
 
 def _node_types(graph: dict) -> set[str]:
-    return {node["type"] for node in graph_nodes(graph)}
+    """Node types of the graph and of the blocks it defines, as the smoke
+    suite's ``_is_slow`` counts them: training inside a block is training."""
+    types = {node["type"] for node in graph_nodes(graph)}
+    for definition in graph.get("subgraphs") or []:
+        types |= {node["type"] for node in definition.get("nodes", [])}
+    return types
 
 
 def test_the_parity_set_is_what_the_skip_lists_allow():

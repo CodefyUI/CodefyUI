@@ -63,7 +63,7 @@
       },
       "data": {
         "params": {
-          "code": "import torch\n\ndef run(inputs, params):\n    # Task A: digits 0-4, plenty of data. Task B: digits 5-9, only 10 labelled\n    # images per digit to train on, and the rest of 5-9 to test on.\n    x = inputs[\"in1\"]\n    y = torch.tensor([int(v) for v in inputs[\"in2\"]])\n    g = torch.Generator().manual_seed(0)\n    a = y < 5\n    xb, yb = x[~a], y[~a] - 5\n    train_idx, test_idx = [], []\n    for digit in range(5):\n        idx = (yb == digit).nonzero().flatten()\n        idx = idx[torch.randperm(len(idx), generator=g)]\n        train_idx += idx[:10].tolist()\n        test_idx += idx[10:].tolist()\n    return {\"out1\": x[a], \"out2\": y[a], \"out3\": xb[train_idx], \"out4\": yb[train_idx],\n            \"out5\": xb[test_idx], \"out6\": yb[test_idx]}\n",
+          "code": "import torch\n\ndef run(inputs, params):\n    # Task A: digits 0-4, plenty of data. Task B: digits 5-9, only 10 labelled\n    # images per digit to train on, and the rest of 5-9 to test on.\n    x = inputs[\"in1\"]\n    y = torch.tensor([int(v) for v in inputs[\"in2\"]], device=device)\n    g = torch.Generator(device=device).manual_seed(0)\n    a = y < 5\n    xb, yb = x[~a], y[~a] - 5\n    train_idx, test_idx = [], []\n    for digit in range(5):\n        idx = (yb == digit).nonzero().flatten()\n        idx = idx[torch.randperm(len(idx), generator=g, device=device)]\n        train_idx += idx[:10].tolist()\n        test_idx += idx[10:].tolist()\n    return {\"out1\": x[a], \"out2\": y[a], \"out3\": xb[train_idx], \"out4\": yb[train_idx],\n            \"out5\": xb[test_idx], \"out6\": yb[test_idx]}\n",
           "input_ports": 2,
           "output_ports": 6,
           "input_types": "TENSOR,LIST",
