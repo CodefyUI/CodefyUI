@@ -66,6 +66,8 @@ __pycache__/
 #: would show the whole graph. ``linguist-generated`` keeps the layout half
 #: of the pair collapsed in a GitHub diff, where it is noise.
 PROJECT_GITATTRIBUTES = """*.json text eol=lf
+*.jsonl text eol=lf
+graphs/**/nodes/* text eol=lf
 layout/*.layout.json linguist-generated=true
 """
 
@@ -83,6 +85,12 @@ _PROJECT_TOML = """[project]
 name = "{name}"
 format_version = 1
 requires_codefyui = ">=1.4"   # advisory metadata; NOT enforced
+
+[storage]
+# "dir": each new graph is a folder (graphs/<name>/), one file per node, so
+# two branches that change different nodes merge cleanly. Existing graphs keep
+# their form until `cdui project migrate`.
+graph_format = "dir"
 
 [plugins]
 # written by `cdui project freeze`; installed by `cdui project restore`
@@ -307,9 +315,13 @@ def adopt_graphs(src: Path, target: Path, *,
     pairs = collect_graph_files(src)
     adopted: list[str] = []
     skipped: list[tuple[str, str]] = []
+    from .graph_storage import GraphStore
+
+    store = GraphStore.for_project(target)
     for base, path in pairs:
         if keep_existing and ((graphs_dir / f"{base}.graph.json").exists()
-                              or (graphs_dir / f"{base}.json").exists()):
+                              or (graphs_dir / f"{base}.json").exists()
+                              or (graphs_dir / base).is_dir()):
             skipped.append((path.name, "the project already has a graph "
                                        "with this name"))
             continue
@@ -318,8 +330,12 @@ def adopt_graphs(src: Path, target: Path, *,
         except (ValueError, OSError) as exc:
             skipped.append((path.name, str(exc)))
             continue
-        write_graph_pair(graphs_dir / f"{base}.graph.json",
-                         layout_dir / f"{base}.layout.json", payload)
+        if store.new_graph_format == "dir" and store.storage_of(base) != "file":
+            # A "dir" project takes imported flat graphs as folders (v2).
+            store.write(base, payload)
+        else:
+            write_graph_pair(graphs_dir / f"{base}.graph.json",
+                             layout_dir / f"{base}.layout.json", payload)
         adopted.append(base)
     if adopted:
         # scaffold_project leaves `.gitkeep` placeholders; once real

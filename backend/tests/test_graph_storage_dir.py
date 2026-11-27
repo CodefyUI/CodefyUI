@@ -505,3 +505,35 @@ def test_unknown_files_in_the_folder_are_left_alone(project):
     store.write("demo", copy.deepcopy(_payload(value="changed")))
     assert note.read_text() == "mine"
     assert "README.md" not in read_tree(project / "graphs" / "demo")
+
+
+# ── requires ──────────────────────────────────────────────────────────────
+
+def test_requires_lists_plugin_and_custom_types_without_versions():
+    providers = {"Start": "builtin", "pk:Embed": "plugin:pk", "MyNode": "custom"}
+    graph = {"nodes": [{"id": "a", "type": "Start"}, {"id": "b", "type": "pk:Embed"}],
+             "subgraphs": [{"id": "s", "nodes": [{"id": "c", "type": "MyNode"}]}],
+             "presets": []}
+    out = gs.derive_requires(graph, None, providers.get)
+    assert out == {"codefyui": gs.REQUIRES_CODEFYUI,
+                   "plugins": {"pk": {"nodes": ["pk:Embed"]}},
+                   "mods": {"nodes": ["MyNode"]}}
+
+
+def test_a_type_this_machine_lacks_keeps_its_old_requirement():
+    previous = {"codefyui": ">=3.4", "plugins": {"gone": {"nodes": ["gone:X"]}},
+                "mods": {"nodes": ["OldMod"]}}
+    graph = {"nodes": [{"id": "a", "type": "gone:X"}, {"id": "b", "type": "OldMod"},
+                       {"id": "c", "type": "Unknown"}]}
+    out = gs.derive_requires(graph, previous, lambda t: None)
+    assert out["plugins"] == {"gone": {"nodes": ["gone:X"]}}
+    assert out["mods"] == {"nodes": ["OldMod"]}
+    # A type no longer in the graph is not carried along.
+    assert gs.derive_requires({"nodes": []}, previous, lambda t: None) == {
+        "codefyui": gs.REQUIRES_CODEFYUI}
+
+
+def test_a_saved_folder_records_requires(project):
+    GraphStore.current().write("demo", _payload())
+    index = json.loads((project / "graphs" / "demo" / "index.json").read_text())
+    assert index["requires"]["codefyui"] == gs.REQUIRES_CODEFYUI

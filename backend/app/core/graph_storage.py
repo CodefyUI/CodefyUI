@@ -467,6 +467,8 @@ class GraphStore:
                 version = STORAGE_VERSION  # unreadable: this save replaces it
             if version != STORAGE_VERSION:
                 raise NewerStorageVersion(stem, version)
+        if requires is None:
+            requires = derive_requires(logic, index_requires_safe(previous))
         try:
             files = explode(logic, previous, dir_len=len(f"graphs/{stem}/"),
                             requires=requires)
@@ -1393,3 +1395,83 @@ def prepare_for_folder(logic: dict) -> tuple[dict, list[str]]:
         blocks.append(d)
     out["subgraphs"] = blocks
     return out, notes
+
+
+# ── requires ──────────────────────────────────────────────────────────────
+
+#: The first CodefyUI release that reads storage version 2.
+REQUIRES_CODEFYUI = ">=3.4"
+
+
+def _node_types(logic: dict) -> set[str]:
+    """Every node type the graph uses: top level, inside blocks, in presets."""
+    found: set[str] = set()
+
+    def walk(nodes) -> None:
+        for node in nodes or ():
+            if isinstance(node, dict) and isinstance(node.get("type"), str):
+                found.add(node["type"])
+
+    walk(logic.get("nodes"))
+    for group in ("subgraphs", "presets"):
+        for entry in logic.get(group) or ():
+            if isinstance(entry, dict):
+                walk(entry.get("nodes"))
+    return found
+
+
+def _registry_provider(node_type: str) -> str | None:
+    from .node_registry import provider_for, registry
+
+    cls = registry.get(node_type)
+    return None if cls is None else provider_for(node_type, cls)
+
+
+def index_requires_safe(files: dict[str, bytes]) -> dict | None:
+    try:
+        return index_requires(files)
+    except (ValueError, LookupError):
+        return None
+
+
+def derive_requires(logic: dict, previous: dict | None,
+                    provider_of=_registry_provider) -> dict:
+    """The index's ``requires``: which plugin and custom ("mods") node types
+    the graph uses, with no versions or hashes (pinning is the manifest's).
+
+    A type this machine does not know keeps the entry the previous save
+    recorded: a missing plugin must not erase the requirement for it.
+    """
+    previous = previous if isinstance(previous, dict) else {}
+    old_owner: dict[str, tuple[str, str | None]] = {}
+    for plugin_id, entry in (previous.get("plugins") or {}).items():
+        for t in (entry or {}).get("nodes") or ():
+            old_owner[t] = ("plugin", plugin_id)
+    for t in (previous.get("mods") or {}).get("nodes") or ():
+        old_owner[t] = ("mods", None)
+    plugins: dict[str, set[str]] = {}
+    mods: set[str] = set()
+    for node_type in _node_types(logic):
+        provider = provider_of(node_type)
+        if provider is None:
+            owner = old_owner.get(node_type)
+            if owner is None:
+                continue
+            kind, plugin_id = owner
+        elif provider.startswith("plugin:"):
+            kind, plugin_id = "plugin", provider.split(":", 1)[1]
+        elif provider == "custom":
+            kind, plugin_id = "mods", None
+        else:
+            continue
+        if kind == "plugin":
+            plugins.setdefault(plugin_id, set()).add(node_type)
+        else:
+            mods.add(node_type)
+    out: dict = {"codefyui": REQUIRES_CODEFYUI}
+    if plugins:
+        out["plugins"] = {pid: {"nodes": sorted(types)}
+                          for pid, types in sorted(plugins.items())}
+    if mods:
+        out["mods"] = {"nodes": sorted(mods)}
+    return out

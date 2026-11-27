@@ -101,5 +101,5 @@ async def test_an_import_commits_only_the_starter_files(http, isolated, gitconfi
     assert resp.status_code == 200, resp.text
     target = Path(resp.json()["created"])
     assert _git(target, "log", "--format=%s") == NEW_PROJECT_COMMIT_MESSAGE
-    assert "graphs/g.graph.json" not in _git(target, "ls-files").splitlines()
-    assert "graphs/g.graph.json" in _git(target, "status", "--porcelain", "-uall")
+    assert "graphs/g/index.json" not in _git(target, "ls-files").splitlines()
+    assert "graphs/g/index.json" in _git(target, "status", "--porcelain", "-uall")

@@ -47,7 +47,7 @@ def test_adopt_copies_and_never_touches_the_source(tmp_path):
     result = adopt_graphs(src, target)
     assert result.adopted == ["g"]
     assert [name for name, _ in result.skipped] == ["broken.json"]
-    assert (target / "graphs" / "g.graph.json").is_file()
+    assert (target / "graphs" / "g" / "index.json").is_file()
     assert (target / "layout" / "g.layout.json").is_file()
     assert not (target / "graphs" / ".gitkeep").exists()
     assert {p.name: p.read_bytes() for p in src.iterdir()} == before

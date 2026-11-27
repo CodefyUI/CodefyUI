@@ -130,9 +130,17 @@ def _validate_one_graph(store, base: str) -> list[str]:
     from app.core.graph_storage import GraphStorageError
 
     try:
-        data = store.read_logic(base)
+        if store.storage_of(base) == "dir":
+            data, repairs = store.read_folder(base)
+        else:
+            data, repairs = store.read_logic(base), []
     except GraphStorageError as e:
         return [f"unreadable: {e}"]
+    if repairs:
+        # A folder that only reads after a repair is a problem to fix (open
+        # it in the editor and save, or fix the files): never passed quietly.
+        return [f"needs_repair: {r.kind} in {r.path}"
+                + (f" ({r.detail})" if r.detail else "") for r in repairs]
     nodes = data.get("nodes", [])
     edges = data.get("edges", [])
     fb = build_preset_fallback(data.get("presets", []))
@@ -295,6 +303,10 @@ def cmd_validate(args: argparse.Namespace) -> int:
         if problems:
             all_ok = False
             err(f"FAIL {base}: {problems[0]}", f"FAIL {base}: {problems[0]}")
+            # Every further problem on its own line (a folder graph's
+            # repairs are listed one by one).
+            for more in problems[1:]:
+                err(f"     {base}: {more}", f"     {base}: {more}")
         else:
             ok(f"PASS {base}", f"PASS {base}")
 
