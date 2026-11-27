@@ -22,6 +22,22 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Added
+
+- **Examples carry a main tag and tags.** A `graph.json` `gallery` block is now `{"main_tag", "tags", "order", "family"}`: `main_tag` is one of `quickstart`, `training`, `llm`, `data`, `evaluation`, `research`, `deploy`, `architectures`, `concepts`, `papers` and `courses` (the server files an example with none under `plugin` or `other`), and `tags` are up to six lowercase, hyphen-joined words, an invalid one dropped on its own. `family` is used only under `architectures`. See `docs/docs/usage/examples-gallery.md#adding-an-example`.
+- **`GET /api/examples/tags`** returns the non-empty main tags in gallery order and every free tag, each with its count.
+- **Main-tag chips, tag filters and tag search in the gallery.** The empty-canvas overlay and the welcome screen show a chip per main tag with its count, open on Quick start, remember the last chip per browser, and start with a **Blank graph** card. The Template Gallery has the same chips (opening on All), a **Filter by tag** row of the tags used by three or more examples (the rest under **More tags**, several selected meaning all of them), clickable tags in the details pane, and an empty state with **Clear filters**. Search in the Template Gallery and the sidebar's Templates tab matches tags and their translated names.
+- **Fifteen practical built-in examples**, each offline, seeded and done in a few seconds on a CPU. Data: **Inspect a dataset first** (`Data/Dataset-Inspection`), **Split and check for leaks** (`Data/Split-And-Leak-Check`). Training: **Early stopping, keep the best** (`Training/Early-Stopping-Best-Checkpoint`), **Transfer with a frozen backbone** (`Training/Transfer-Frozen-Backbone`). Evaluation: **Five seeds, mean and spread** (`Evaluation/Multi-Seed-Mean-Std`), **Evaluate a saved checkpoint** (`Evaluation/Checkpoint-Confusion-Matrix`), **Compare two checkpoints** (`Evaluation/Compare-Two-Checkpoints`), **Project embeddings to 2D** (`Evaluation/Embedding-Projection-2D`). Experiments: **Find a learning rate** (`Research/LR-Range-Test`), **Learning rate x batch size** (`Research/LR-BatchSize-Grid`), **Ablation: input scaling** (`Research/Ablation-Input-Standardization`). Deploy: **Train and export a classifier** and **Serve a classifier over HTTP** (`Deploy/Classifier-Service/`; the second loads the weights the first writes). LLM: **Measure retrieval hit rate** (`LLM/RAG-Retrieval-Hit-Rate`, no pack needed) and **Fine-tune a tiny char LM** (`LLM/Finetune-Char-LM-Custom-Text`). The gallery now holds 87 built-in examples.
+- **`FreezeParameters` node** sets `requires_grad` for a model's parameters by name prefix, for training only a new head on a frozen backbone.
+- **Bundled sample `backend/data/samples/digits.csv`**: the 1,797 8x8 UCI handwritten digits (CC BY 4.0, credited in `THIRD_PARTY_NOTICES.md`), used by seven of the new examples.
+
+### Changed
+
+- **The gallery is ordered practical first**: Quick start, Training, LLM & RAG, Data, Evaluation, Experiments, Deploy, then Architectures, Concepts, Papers and Courses. Examples that were under Concepts moved to Data or Evaluation where that is what they show, **Classify Iris with sklearn KNN** joined Quick start, and **Pretrain an LM on TinyStories** moved from Training to LLM & RAG.
+- **`GET /api/examples/list` is sorted by main tag, `order` and name** instead of by path, and each entry adds `main_tag` and `tags`. `section` is deprecated: it is still served, equal to `main_tag`, and a file that sets only `section` is still read through it, so third-party plugin examples keep working unchanged.
+- **The examples of the built-in plugin packs are listed under Courses**, one sub-heading per pack. A plugin example that declares a main tag is listed under it; one that declares none is under Plugin packs.
+- **Example cards show up to two tags** (and `+n`) instead of the example's folder.
+
 ## [3.3.0] — 2026-11-27
 
 ### Added

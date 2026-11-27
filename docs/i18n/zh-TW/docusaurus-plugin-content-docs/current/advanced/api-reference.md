@@ -59,7 +59,8 @@ Host guard 會在其他所有檢查之前處理每個 request，包括 SPA 頁�
 | `/api/graph/export` | POST | token | 匯出單檔、headless 的 Python runner。它會內嵌圖表，並需要相容的 CodefyUI 後端環境，但不需要執行中的伺服器。response 為 `{script, warnings}`，`warnings` 列出填了絕對路徑、會把腳本綁在這台電腦上的檔案參數。 |
 | `/api/graph/contract/{name}` | GET | open | 從已儲存圖表推導出的函式簽名——`inputs`、`outputs`、`problems`——供腳本呼叫。參閱[把 graph 當成函式呼叫，第 3 節](/usage/graph-as-a-function#3-inspect-the-contract)。 |
 | `/api/graph/run/{name}` | POST | token | 將最新儲存的檔案當成函式執行：輸入 `{inputs, timeout_s, device, record_outputs}`，每種結果都輸出九鍵 envelope。參閱[把 graph 當成函式呼叫，第 4 節](/usage/graph-as-a-function#4-run-the-graph)。 |
-| `/api/examples/list` | GET | open | 列出內建範例圖與已啟用外掛的範例圖：`[{name, description, category, path, source, node_count, edge_count, section, family, order}]`。`source` 為 `builtin` 或 `plugin:<id>`，`node_count` 不計入註記，`section`、`family` 與 `order` 決定範例在範例集中的位置（參閱[範例集，新增範例](/usage/examples-gallery#adding-an-example)）。 |
+| `/api/examples/list` | GET | open | 依範例集的順序（主標籤，再依 `order`，再依名稱）列出內建範例圖與已啟用外掛的範例圖：`[{name, description, category, path, source, node_count, edge_count, main_tag, tags, order, family, section}]`。`source` 為 `builtin` 或 `plugin:<id>`，`node_count` 不計入註記。`main_tag` 一定有值（沒有宣告時，外掛範例為 `plugin`、內建範例為 `other`），`tags` 以主標籤開頭、後面接自由標籤，不會重複；`main_tag`、`tags`、`family` 與 `order` 決定範例在範例集中的位置（參閱[範例集，新增範例](/usage/examples-gallery#adding-an-example)）。`section` 已棄用：它等於 `main_tag`，保留給舊版用戶端。 |
+| `/api/examples/tags` | GET | open | 範例集的詞彙與數量：`{main_tags: [{id, order, count}], tags: [{id, count}]}`。`main_tags` 只列出有範例的主標籤，依範例集的順序排列，`order` 是主標籤的排序位置；`tags` 列出所有自由標籤（不含主標籤），依使用次數由多到少排序，次數相同時依 id 排序。 |
 | `/api/examples/load` | GET | open | 載入一張範例圖；`?path=` 是清單某一列的 `path`。 |
 
 ## Run 與 sweep {/* #runs-and-sweeps */}

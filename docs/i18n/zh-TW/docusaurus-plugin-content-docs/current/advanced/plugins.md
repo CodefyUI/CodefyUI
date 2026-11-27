@@ -345,6 +345,16 @@ cdui plugin install your-username/your-fork
 
 請將外掛內容放在 manifest 旁的固定目錄中：`nodes/`（自動探索）、`presets/`、`examples/`、`assets/`（於 `/plugins/<id>/assets/<file>` 提供），以及 `frontend/`（參閱[外掛前端擴充](/advanced/plugin-frontend-extensions)）。這些目錄名稱無法設定，而且 scaffold 的 `[content]` table 會被忽略。`cdui.plugin.toml` manifest 會宣告 id、版本、課程 metadata，以及[安全性](#security--three-tiers)所述的任何 `[security]` 設定。節點只使用第 0 級 imports 時，請省略 `[security]`。
 
+### 範例集中的範例 {/* #examples-in-the-gallery */}
+
+套件包 `examples/` 底下每個放著 `graph.json` 的資料夾就是一個範例，套件包啟用時會列在[範例集](/usage/examples-gallery)中。檔案裡的 `gallery` 區塊決定它放在哪裡：
+
+```json
+"gallery": { "main_tag": "training", "tags": ["vision", "cnn"], "order": 10 }
+```
+
+`main_tag` 是範例集的其中一個主標籤（`quickstart`、`training`、`llm`、`data`、`evaluation`、`research`、`deploy`、`architectures`、`concepts`、`papers`、`courses`），範例會和內建範例一起列在那裡；放在 `courses` 時，套件包的範例會有自己的小標題，CodefyUI 隨附的套件包都放在這裡。`tags` 最多六個小寫、以連字號連接的字，供範例集的標籤篩選與搜尋使用。在主標籤出現之前寫的套件包只設定了 `"section"`，仍然可以用，因為認得的 `section` 會被當成主標籤。兩者都沒有、或值是範例集不認得的範例，會放到**插件範例**底下，每個套件包一個小標題。完整規則（包括 `order` 與 `family`）見[新增範例](/usage/examples-gallery#adding-an-example)。
+
 ### manifest 欄位參考 {/* #manifest-reference */}
 
 只有安裝或載入會使用的欄位才會驗證。其他欄位可能未經驗證就顯示或儲存。
