@@ -662,7 +662,7 @@ def test_an_artifact_event_names_a_transfer_rows_key():
 
 
 @pytest.fixture
-async def http(data_root, db, monkeypatch):
+async def http(data_root, db, app_state):
     """The app with a stand-in run service (run ``r1`` on ``gpu-1``) and a
     worker store that knows two worker tokens."""
     store = RunStore(db)
@@ -677,10 +677,9 @@ async def http(data_root, db, monkeypatch):
     async def authenticate(token: str | None) -> str | None:
         return tokens.get(token or "")
 
-    monkeypatch.setattr(app.state, "run_service", service, raising=False)
-    monkeypatch.setattr(app.state, "worker_store",
-                        SimpleNamespace(authenticate=authenticate),
-                        raising=False)
+    app_state("run_service", service)
+    app_state("worker_store",
+              SimpleNamespace(authenticate=authenticate))
     async with AsyncClient(transport=ASGITransport(app=app),
                            base_url="http://127.0.0.1:8000") as client:
         client.run = record  # type: ignore[attr-defined]

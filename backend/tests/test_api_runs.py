@@ -1183,7 +1183,7 @@ async def test_delete_also_purges_the_run_s_captured_outputs(client):
 
 
 async def test_delete_drops_a_worker_run_s_outputs_on_its_worker(
-        client, run_app, monkeypatch):
+        client, run_app, app_state):
     """A worker run's captures are on its worker (#789): deleting the run
     stops retaining it here and tells the worker, whether this server
     retained it (``on_remote_drop``) or only its record says so (after a
@@ -1194,11 +1194,10 @@ async def test_delete_drops_a_worker_run_s_outputs_on_its_worker(
     outputs = RunOutputStore(max_runs=4)
     outputs.on_remote_drop = lambda run, worker: told.append((run, worker))
     registry_drops: list[tuple[str, str]] = []
-    monkeypatch.setattr(app.state, "run_output_store", outputs,
-                        raising=False)
-    monkeypatch.setattr(app.state, "worker_registry", SimpleNamespace(
+    app_state("run_output_store", outputs)
+    app_state("worker_registry", SimpleNamespace(
         outputs=SimpleNamespace(drop=lambda run, worker: registry_drops
-                                .append((run, worker)))), raising=False)
+                                .append((run, worker)))))
 
     async def worker_run(record: bool = True) -> str:
         row = await run_app.store.create_run(

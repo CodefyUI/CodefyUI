@@ -240,6 +240,23 @@ def _ensure_registry_intact(registry_with_nodes):
 
 
 @pytest.fixture
+def app_state(monkeypatch):
+    """Set an ``app.state`` attribute for one test: ``app_state(name, value)``.
+
+    Not ``monkeypatch.setattr(app.state, ...)``: starlette's ``State`` keeps
+    its values in ``State._state``, not in its ``__dict__``, and since pytest
+    9.2 (pytest#10644) ``setattr`` takes the value to restore from the
+    target's ``__dict__``. It saw "absent" for every attribute, so teardown
+    deleted an attribute the app had set (leaking into later tests) and,
+    for one set twice, failed with ``KeyError``. Patching the dict restores
+    the real previous value under any pytest version.
+    """
+    def patch(name: str, value: Any) -> None:
+        monkeypatch.setitem(app.state._state, name, value)
+    return patch
+
+
+@pytest.fixture
 async def test_client():
     """Async HTTP client connected to the FastAPI app via ASGI transport.
 

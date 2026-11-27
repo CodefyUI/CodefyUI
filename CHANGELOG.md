@@ -42,6 +42,11 @@ received — each links to the release it was published as.
 - **Six example graphs saved params their nodes stopped defining** (`dropout` on GRU, LSTM and MultiHeadAttention; `alpha` on Multiply; `bias` on Linear). The deep pack's Conv2D Kernel Effects set its activation through a stale `type` key and only ran ReLU because that is the default; it now sets `function`.
 - **`TextCorpusDataset` finds bundled `data/samples/` files from any working directory and in project mode**, the rule `DocumentLoader` already applied.
 
+### Internal
+
+- **Backend tests set `app.state` through a new `app_state` fixture, so they pass with pytest 9.2.** pytest 9.2's `monkeypatch.setattr` (pytest#10644) takes the value to restore from the target's `__dict__`, which starlette's `State` does not use, so every patched `app.state` attribute was deleted at teardown, even one the app had set, and one patched twice in a test failed with `KeyError`. The fixture patches `app.state._state` with `monkeypatch.setitem`, which restores the real previous value under any pytest version.
+- **`test_ssh_launch.py` no longer reads a fake ssh's log line while it is half written.** A poll on Linux could see an append in progress and fail with `JSONDecodeError`; the reader now parses only complete lines, and the fake writes each line in one `write`.
+
 ## [3.2.0] — 2026-10-22
 
 3.2.0 completes the control-plane / worker split that 3.1.0 started (#764).

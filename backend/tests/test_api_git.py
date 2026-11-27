@@ -124,7 +124,7 @@ def _git_service() -> GitService:
 
 
 @pytest.fixture
-def project(make_repo, monkeypatch) -> Repo:  # noqa: F811
+def project(make_repo, monkeypatch, app_state) -> Repo:  # noqa: F811
     """A real repository, open as the project, with a service in front of it.
 
     One commit and the scaffold, from the factory the service tests use, so
@@ -132,19 +132,17 @@ def project(make_repo, monkeypatch) -> Repo:  # noqa: F811
     """
     repo = make_repo()
     monkeypatch.setattr(settings, "PROJECT_DIR", repo.root)
-    monkeypatch.setattr(app.state, "git_service", _git_service(),
-                        raising=False)
+    app_state("git_service", _git_service())
     return repo
 
 
 @pytest.fixture
-def empty_project(tmp_path, monkeypatch):
+def empty_project(tmp_path, monkeypatch, app_state):
     """A project directory that is NOT a repository yet -- what init is for."""
     root = tmp_path / "fresh"
     root.mkdir()
     monkeypatch.setattr(settings, "PROJECT_DIR", root)
-    monkeypatch.setattr(app.state, "git_service", _git_service(),
-                        raising=False)
+    app_state("git_service", _git_service())
     return root
 
 
@@ -904,13 +902,12 @@ async def test_an_identity_write_may_set_one_half(test_client, project):
 # --- "no project open" is a screen, not an error -----------------------------
 
 
-async def test_status_without_a_project_is_a_200_with_a_state(test_client,
-                                                              monkeypatch):
+async def test_status_without_a_project_is_a_200_with_a_state(
+        test_client, monkeypatch, app_state):
     """The first screen most people see. A 409 here would draw an error
     toast on a machine where nothing at all is wrong."""
     monkeypatch.setattr(settings, "PROJECT_DIR", None)
-    monkeypatch.setattr(app.state, "git_service", _git_service(),
-                        raising=False)
+    app_state("git_service", _git_service())
 
     response = await test_client.get("/api/git/status")
 
@@ -921,12 +918,11 @@ async def test_status_without_a_project_is_a_200_with_a_state(test_client,
     assert body["status"] is None
 
 
-async def test_a_write_without_a_project_is_a_409_with_a_code(test_client,
-                                                              monkeypatch):
+async def test_a_write_without_a_project_is_a_409_with_a_code(
+        test_client, monkeypatch, app_state):
     """Every OTHER route has to fail, and with a code the tab translates."""
     monkeypatch.setattr(settings, "PROJECT_DIR", None)
-    monkeypatch.setattr(app.state, "git_service", _git_service(),
-                        raising=False)
+    app_state("git_service", _git_service())
 
     response = await test_client.post("/api/git/stage", json={"all": True})
 

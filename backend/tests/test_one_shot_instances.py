@@ -706,7 +706,7 @@ async def test_an_adopted_instance_run_is_taken_back_by_its_process_only(
 
 
 async def test_an_instance_cannot_upload_into_the_credentials_own_run(
-        http, monkeypatch):  # noqa: F811
+        http, app_state):  # noqa: F811
     """Second review of #855 (security): every agent of a credential holds
     its token; an upload for the credential's own worker's run is taken
     only from the agent process running it, live or (after a restart)
@@ -715,8 +715,7 @@ async def test_an_instance_cannot_upload_into_the_credentials_own_run(
     holders = {"gpu-1": SimpleNamespace(instance_id="regular",
                                         instance_hash=None)}
     registry = SimpleNamespace(holder=holders.get, get=holders.get)
-    monkeypatch.setattr(app.state, "worker_registry", registry,
-                        raising=False)
+    app_state("worker_registry", registry)
 
     def upload(instance: str | None) -> Any:
         headers = {TOKEN_HEADER: "token-gpu-1"}
@@ -737,12 +736,11 @@ async def test_an_instance_cannot_upload_into_the_credentials_own_run(
     assert (await upload("regular")).status_code == 200
 
 
-async def test_an_instance_uploads_for_its_own_run_only(http, monkeypatch):  # noqa: F811
+async def test_an_instance_uploads_for_its_own_run_only(http, app_state):  # noqa: F811
     http.running["r1"] = "gpu-1.a"
     registry = SimpleNamespace(get=lambda worker_id: {
         "gpu-1.a": SimpleNamespace(instance_id="secret-a")}.get(worker_id))
-    monkeypatch.setattr(app.state, "worker_registry", registry,
-                        raising=False)
+    app_state("worker_registry", registry)
 
     def upload(token: str, instance: str | None) -> Any:
         headers = {TOKEN_HEADER: token}
@@ -762,8 +760,8 @@ async def test_an_instance_uploads_for_its_own_run_only(http, monkeypatch):  # n
     accepted = await upload("token-gpu-1", "secret-a")
     assert accepted.status_code == 200, accepted.text
     # The registry no longer knowing the instance: no.
-    monkeypatch.setattr(app.state, "worker_registry",
-                        SimpleNamespace(get=lambda _id: None), raising=False)
+    app_state("worker_registry",
+              SimpleNamespace(get=lambda _id: None))
     assert (await upload("token-gpu-1", "secret-a")).status_code == 409
     # A regular worker's upload is unchanged.
     http.running["r1"] = "gpu-1"
