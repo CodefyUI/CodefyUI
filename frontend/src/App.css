@@ -25,11 +25,19 @@ html {
      ceiling to 19px so a large monitor gets more than the old 18px rather than
      less. Between those it still tracks the window.
 
+     Phase 5 (density) flattened the curve to clamp(16px, 0.1vw + 14.5px,
+     16.5px): at 0.35vw the root reached 17.7px on a 1080p window, so every
+     row, button and card was 10% larger on the bigger screen and it showed
+     no more than the laptop did. Now 1280-1470px windows stay at 16px and
+     1920px is 16.4px. The floor stays 16px, not lower: --fs-2xs (0.6875rem,
+     the badges) is 11px at 16px, the smallest text the UI allows at the
+     default size.
+
      --font-scale is the Small/Default/Large control (App.tsx). It multiplies
      rather than replacing, so the choice composes with the viewport instead of
      overriding it — which is why Large is genuinely large on a big monitor. */
   --font-scale: 1;
-  font-size: calc(clamp(16px, 0.35vw + 11px, 19px) * var(--font-scale));
+  font-size: calc(clamp(16px, 0.1vw + 14.5px, 16.5px) * var(--font-scale));
 
   /* CJK fonts have no italic face, so italic Chinese used to get a fake
      oblique; fonts with a real italic (Segoe UI, KaTeX's math fonts, the code

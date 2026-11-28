@@ -551,9 +551,9 @@ describe('useUIStore', () => {
     it('is 13.5rem plus 57px at the current root size', () => {
       document.documentElement.style.fontSize = '16px';
       expect(sidebarDefaultWidthPx()).toBe(273);
-      // 2560px window on Large: 19px × 1.15.
-      document.documentElement.style.fontSize = '21.85px';
-      expect(sidebarDefaultWidthPx()).toBe(352);
+      // 2560px window on Large: 16.5px × 1.15.
+      document.documentElement.style.fontSize = '18.975px';
+      expect(sidebarDefaultWidthPx()).toBe(313);
     });
 
     it('assumes a 16px root when the root size cannot be read', () => {

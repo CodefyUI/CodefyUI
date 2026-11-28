@@ -15,7 +15,8 @@
    contrast pair and is not part of the dark-surface token system. */
 .header {
   background: linear-gradient(135deg, #B8860B, #D4A017, #C5941A);
-  padding: var(--sp-3) var(--sp-4);
+  /* 4px above and below, as BaseNode's (phase 5). */
+  padding: var(--sp-2) var(--sp-4);
   /* card radius (--radius-lg) minus the 1px card border, so it nests flush. */
   border-radius: calc(var(--radius-lg) - 1px) calc(var(--radius-lg) - 1px) 0 0;
   font-weight: var(--fw-semibold);
@@ -49,15 +50,15 @@
 
 /* Ports area */
 .portsArea {
-  padding-top: var(--sp-3);
-  padding-bottom: var(--sp-3);
+  padding-top: var(--sp-2);
+  padding-bottom: var(--sp-2);
 }
 
 /* Vertical padding matches BaseNode's port rows — see the comment there for
    why the dot, not the label, sets it. */
 .inputRow {
   position: relative;
-  padding: var(--sp-3) var(--sp-4) var(--sp-3) var(--sp-5);
+  padding: var(--sp-port-row) var(--sp-4) var(--sp-port-row) var(--sp-5);
   display: flex;
   align-items: center;
   gap: var(--sp-3);
@@ -65,7 +66,7 @@
 
 .outputRow {
   position: relative;
-  padding: var(--sp-3) var(--sp-5) var(--sp-3) var(--sp-4);
+  padding: var(--sp-port-row) var(--sp-5) var(--sp-port-row) var(--sp-4);
   display: flex;
   align-items: center;
   justify-content: flex-end;

@@ -830,6 +830,13 @@ export function Toolbar() {
       onClick: () => void handleReloadNodes(),
       className: styles.narrowOnly,
     },
+    // Custom Nodes, the same way below 1400px (phase 5): the 1280px toolbar
+    // was two rows. Opens the same manager as the toolbar button.
+    {
+      label: t('toolbar.customNodes'),
+      onClick: () => useUIStore.getState().openCustomNodeManager(),
+      className: styles.narrowOnlyMid,
+    },
   ];
 
   const exportMenuItems: MenuItem[] = [
@@ -1030,7 +1037,8 @@ export function Toolbar() {
             and the panel it opens is titled Custom Node Manager. */}
         <button type="button"
           onClick={() => useUIStore.getState().openCustomNodeManager()}
-          className={`${styles.ghost} ${styles.ghostMuted}`}
+          className={`${styles.ghost} ${styles.ghostMuted} ${styles.wideOnlyMid}`}
+          data-testid="toolbar-custom-nodes"
         >
           {t('toolbar.customNodes')}
         </button>

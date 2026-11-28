@@ -10,8 +10,13 @@
   box-shadow: var(--inner-highlight);
   /* Side padding is --sp-4, not --sp-5: with a side-panel toggle
      (apiVersion 6) in the row, the 13-inch (1470px) toolbar was 11px too
-     long for one line and wrapped to two. */
-  padding: var(--sp-3) var(--sp-4);
+     long for one line and wrapped to two.
+     Height (phase 5): one row is --h-toolbar (44px), the bottom rule
+     included: every control is --h-control-sm (28px) and the padding above
+     and below takes the rest. The Run button used to be 34px and set the
+     row at 51-52px. min-height, so a toolbar that does wrap still grows. */
+  padding: calc((var(--h-toolbar) - var(--h-control-sm) - 1px) / 2) var(--sp-4);
+  min-height: var(--h-toolbar);
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -83,6 +88,30 @@
   }
 }
 
+/* Custom Nodes: the same move at 1400px (phase 5). At 1280px the toolbar
+   needed ~107px more than it had (plus one side-panel toggle) and wrapped to
+   two rows; this button gives back ~119px of it. The File-menu row opens
+   the same manager. */
+.menuItem.narrowOnlyMid {
+  display: none;
+}
+
+@media (max-width: 1399px) {
+  .ghost.wideOnlyMid {
+    display: none;
+  }
+
+  .menuItem.narrowOnlyMid {
+    display: block;
+  }
+
+  /* The device names stay whole in the options and in the title. */
+  .deviceSelect {
+    max-width: 11rem;
+    text-overflow: ellipsis;
+  }
+}
+
 /* ----- Vertical separator -----
    Render this only as the last child of a .cluster, never as a direct child
    of .root. .root wraps, so a divider that is a root flex item of its own can
@@ -106,7 +135,8 @@
   font-weight: var(--fw-bold);
   border-radius: var(--radius);
   border: 0;
-  padding: var(--sp-3) var(--sp-4);
+  height: var(--h-control-sm);
+  padding: 0 var(--sp-4);
   display: inline-flex;
   align-items: center;
   gap: var(--sp-3);
@@ -144,7 +174,8 @@
   background: var(--surface-input);
   border: 1px solid var(--border-strong);
   color: var(--text-secondary);
-  padding: var(--sp-2) var(--sp-3);
+  height: var(--h-control-sm);
+  padding: 0 var(--sp-3);
   font-size: var(--fs-md);
   font-weight: var(--fw-semibold);
   border-radius: var(--radius);
@@ -181,7 +212,8 @@
   color: var(--text-muted);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
-  padding: var(--sp-2) var(--sp-4);
+  height: var(--h-control-sm);
+  padding: 0 var(--sp-4);
   display: inline-flex;
   align-items: center;
   gap: var(--sp-3);
@@ -215,7 +247,10 @@
   color: var(--text-secondary);
   background: transparent;
   border: 0;
-  padding: var(--sp-2) var(--sp-3);
+  /* 4px a side, not 8 (phase 5): File, Export and Templates read as a row
+     of words, and the 24px they give back helps keep 1280px on one row. */
+  height: var(--h-control-sm);
+  padding: 0 var(--sp-2);
   border-radius: var(--radius-sm);
   font-family: inherit;
   font-size: var(--fs-md);
@@ -279,7 +314,8 @@
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-4);
+  height: var(--h-control-sm);
+  padding: 0 var(--sp-4);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
   background: transparent;
@@ -322,6 +358,7 @@
 .splitButton {
   display: inline-flex;
   align-items: stretch;
+  height: var(--h-control-sm);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
   flex-shrink: 0;
@@ -333,7 +370,7 @@
   background: transparent;
   color: var(--text-secondary);
   border: 0;
-  padding: var(--sp-2) var(--sp-4);
+  padding: 0 var(--sp-4);
   cursor: pointer;
   font-family: inherit;
   font-size: var(--fs-md);
@@ -357,7 +394,7 @@
 .splitButtonCaret {
   border-left: 1px solid var(--border-base);
   border-radius: 0 calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0;
-  padding: var(--sp-2) var(--sp-3);
+  padding: 0 var(--sp-3);
   font-size: 0.7em;
 }
 
@@ -559,7 +596,8 @@
   border: 0;
   border-left: 1px solid var(--border-strong);
   border-radius: 0 var(--radius) var(--radius) 0;
-  padding: var(--sp-3) var(--sp-3);
+  height: var(--h-control-sm);
+  padding: 0 var(--sp-3);
   font-family: inherit;
   font-size: 0.7em;
   cursor: pointer;

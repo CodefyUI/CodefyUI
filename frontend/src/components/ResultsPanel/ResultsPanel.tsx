@@ -14,7 +14,48 @@ import styles from './ResultsPanel.module.css';
 
 const MIN_HEIGHT = 80;
 const MAX_HEIGHT = 600;
-const DEFAULT_HEIGHT = 200;
+/** 160, not 200 (phase 5): the panel opens at this height the first time. */
+export const DEFAULT_HEIGHT = 160;
+
+/**
+ * Where the dock's geometry is remembered (phase 5). `userSet` says the user
+ * opened, closed or resized it themselves: until then the dock starts
+ * collapsed and opens by itself at the first output; from then on their
+ * choice is what every load starts from.
+ */
+export const RESULTS_PANEL_KEY = 'codefyui-results-panel';
+
+interface StoredPanel {
+  height: number;
+  collapsed: boolean;
+  userSet: boolean;
+}
+
+/** The remembered geometry, or the fresh default: collapsed, 160px, not set.
+ * Unreadable or malformed storage is the default, never an error. */
+export function loadPanelState(): StoredPanel {
+  const fresh: StoredPanel = { height: DEFAULT_HEIGHT, collapsed: true, userSet: false };
+  try {
+    const raw = localStorage.getItem(RESULTS_PANEL_KEY);
+    if (raw === null) return fresh;
+    const value = JSON.parse(raw) as Partial<StoredPanel>;
+    if (value.userSet !== true) return fresh;
+    const height = typeof value.height === 'number' && Number.isFinite(value.height)
+      ? Math.min(MAX_HEIGHT, Math.max(MIN_HEIGHT, Math.round(value.height)))
+      : DEFAULT_HEIGHT;
+    return { height, collapsed: value.collapsed === true, userSet: true };
+  } catch {
+    return fresh;
+  }
+}
+
+function savePanelState(state: StoredPanel): void {
+  try {
+    localStorage.setItem(RESULTS_PANEL_KEY, JSON.stringify(state));
+  } catch {
+    /* not remembered: the next load starts from the default */
+  }
+}
 
 /**
  * A plugin panel's tab is its registry key behind a `plugin:` prefix (#132).
@@ -76,13 +117,17 @@ export function ResultsPanel() {
   // is a positional index into `filteredLogs`, so carrying it across a switch
   // would expand whatever row happens to sit at that index in the new tab's
   // log. It is reset below.
-  const [collapsed, setCollapsed] = useState(false);
-  const [panelHeight, setPanelHeight] = useState(DEFAULT_HEIGHT);
+  // Phase 5: collapsed (the tab row alone) until there is output, unless the
+  // user's own choice is remembered.
+  const [initialPanel] = useState(loadPanelState);
+  const [collapsed, setCollapsed] = useState(initialPanel.collapsed);
+  const [panelHeight, setPanelHeight] = useState(initialPanel.height);
+  const [userSet, setUserSet] = useState(initialPanel.userSet);
   const [panelTab, setPanelTab] = useState<PanelTab>('log');
   const [infoColWidth, setInfoColWidth] = useState(300);
   const [configHeight, setConfigHeight] = useState<number | null>(null);
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
-  const heightBeforeCollapse = useRef(DEFAULT_HEIGHT);
+  const heightBeforeCollapse = useRef(initialPanel.height);
   const isDragging = useRef(false);
   const startY = useRef(0);
   const startHeight = useRef(0);
@@ -215,6 +260,7 @@ export function ResultsPanel() {
   const handleResizeStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     isDragging.current = true;
+    setUserSet(true);
     startY.current = e.clientY;
     startHeight.current = panelHeight;
 
@@ -256,6 +302,36 @@ export function ResultsPanel() {
       return !prev;
     });
   }, [panelHeight]);
+
+  // The first output opens the dock by itself, once the user has not chosen
+  // otherwise: a fresh install starts with it out of the way, and the first
+  // run's log is still where it appears. Keyed on "this tab has output",
+  // so a switch to a tab that already has some opens it too.
+  const hasOutput = logs.length > 0;
+  useEffect(() => {
+    if (hasOutput && !userSet) setCollapsed(false);
+  }, [hasOutput, userSet]);
+
+  // Remembered only once the user has opened, closed or resized it.
+  useEffect(() => {
+    if (userSet) savePanelState({ height: panelHeight, collapsed, userSet });
+  }, [userSet, panelHeight, collapsed]);
+
+  /** The collapse button: a choice of the user's, remembered. */
+  const userToggleCollapse = useCallback(() => {
+    setUserSet(true);
+    toggleCollapse();
+  }, [toggleCollapse]);
+
+  /** A tab click on a collapsed dock opens it (the tab row is all there is
+   * to click), and that counts as the user's choice. */
+  const showTab = useCallback((tab: PanelTab) => {
+    setPanelTab(tab);
+    if (collapsed) {
+      setUserSet(true);
+      toggleCollapse();
+    }
+  }, [collapsed, toggleCollapse]);
 
   // "Show the Runs tab" from elsewhere (#775: a run queued from the
   // toolbar), expanding the dock if it was collapsed. Mount-time 0 asks
@@ -344,7 +420,7 @@ export function ResultsPanel() {
           {/* Inner tabs */}
           <button type="button"
             className={`${styles.panelTabBtn} ${panelTab === 'log' ? styles.panelTabActive : ''}`}
-            onClick={() => setPanelTab('log')}
+            onClick={() => showTab('log')}
           >
             {t('results.title')}
             {filteredLogs.length > 0 && (
@@ -353,7 +429,7 @@ export function ResultsPanel() {
           </button>
           <button type="button"
             className={`${styles.panelTabBtn} ${panelTab === 'training' ? styles.panelTabActive : ''} ${!hasTraining ? styles.panelTabDisabled : ''}`}
-            onClick={() => hasTraining && setPanelTab('training')}
+            onClick={() => hasTraining && showTab('training')}
             disabled={!hasTraining}
           >
             {t('results.training')}
@@ -365,7 +441,7 @@ export function ResultsPanel() {
           </button>
           <button type="button"
             className={`${styles.panelTabBtn} ${panelTab === 'runs' ? styles.panelTabActive : ''}`}
-            onClick={() => setPanelTab('runs')}
+            onClick={() => showTab('runs')}
           >
             {t('runs.tab')}
             {activeRuns > 0 && (
@@ -380,7 +456,7 @@ export function ResultsPanel() {
             <button type="button"
               key={panel.key}
               className={`${styles.panelTabBtn} ${panelTab === `${PLUGIN_TAB_PREFIX}${panel.key}` ? styles.panelTabActive : ''}`}
-              onClick={() => setPanelTab(`${PLUGIN_TAB_PREFIX}${panel.key}`)}
+              onClick={() => showTab(`${PLUGIN_TAB_PREFIX}${panel.key}`)}
               title={panel.title}
               data-testid={`plugin-dock-tab-${panel.key}`}
             >
@@ -403,7 +479,7 @@ export function ResultsPanel() {
             </button>
           )}
           <button type="button"
-            onClick={toggleCollapse}
+            onClick={userToggleCollapse}
             className={styles.collapseBtn}
             title={collapsed ? t('results.expand') : t('results.collapse')}
             aria-label={collapsed ? t('results.expand') : t('results.collapse')}

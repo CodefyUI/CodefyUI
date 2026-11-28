@@ -3,6 +3,7 @@ import { useReactFlow } from '@xyflow/react';
 import { useTabStore } from '../store/tabStore';
 import { useNodeDefStore } from '../store/nodeDefStore';
 import { insertExample } from '../utils/openExample';
+import { useUIStore } from '../store/uiStore';
 
 export function useDragAndDrop() {
   const { screenToFlowPosition } = useReactFlow();
@@ -28,7 +29,10 @@ export function useDragAndDrop() {
       const presetName = event.dataTransfer.getData('application/codefyui-preset');
       if (presetName) {
         const preset = presets.find((p) => p.preset_name === presetName);
-        if (preset) addPresetNode(preset, position);
+        if (preset) {
+          addPresetNode(preset, position);
+          useUIStore.getState().markPaletteHintSeen();
+        }
         return;
       }
 
@@ -36,7 +40,10 @@ export function useDragAndDrop() {
       const nodeType = event.dataTransfer.getData('application/codefyui-node');
       if (nodeType) {
         const definition = definitions.find((d) => d.node_name === nodeType);
-        if (definition) addNode(definition, position);
+        if (definition) {
+          addNode(definition, position);
+          useUIStore.getState().markPaletteHintSeen();
+        }
         return;
       }
 

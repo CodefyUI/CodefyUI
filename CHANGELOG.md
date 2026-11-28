@@ -46,6 +46,7 @@ received — each links to the release it was published as.
 - **`GET /api/projects/mods`** and **`POST /api/projects/trust-mods`**; `GET /api/projects` and every switch answer with a `mods` status.
 ### Changed
 
+- **More of the screen for the graph (density pass).** The root font size no longer grows with the window (16px up to 1470px wide, 16.4px at 1920px; it was 17.7px on a 1080p window), and Small, Default and Large multiply it as before. The toolbar is one 44px row down to a 1280px window, with **Custom Nodes** in the **File** menu below 1400px. A node palette row is the node's name and one line of its description (39px, from 66px); a **Names only** button shows 28px rows, the category headers are shorter, and *Drag nodes onto the canvas* shows until the first drop. The results panel starts collapsed to its tabs, opens at 160px on the first output, and remembers the height and state you choose. The blank tab's title block is smaller, its cards are 12rem with six per row on a wide window, its main-tag chips are one row that scrolls sideways (with the mouse wheel too, the chosen chip kept in view, and a fade on each side that has more), and cards cut off at the bottom fade out. Node cards are about 15% shorter at the same width, with the port press targets 8px apart. The config panel, the Inspector and the Template Gallery take less padding, and canvas tabs can be 72px wide. On a 13-inch (1470x840) window with no output yet, the canvas is 31% larger and the palette shows 14 nodes instead of 5.
 - **`cdui project restore` asks before installing a pin the lockfile does not have**, after showing its source, the modules it asks to import and its capabilities; in a script pass `--yes`. A restore without a terminal and without `--yes` installs nothing for such a pin.
 - **`cdui project freeze` edits the manifest in place**, so comments and tables it does not own stay as you wrote them, and it also writes `[mods]`.
 - **A folder graph's `requires.mods` lists its `project:` nodes**; custom nodes installed on the author's computer are listed under `requires.custom`. An `index.json` written before this still reads.
@@ -62,6 +63,7 @@ received — each links to the release it was published as.
 
 ### Fixed
 
+- **The mods prompt names a capability in the page's language** (`需要網路`, not `需要 network：可連線任何主機…`), with what granting it costs in the tooltip, and a one-line file reads "1 line".
 - Reconnecting one end of a wire no longer moves the wire to the end of the graph's edge list, which changed the saved order of every wire after it.
 - A note added while inside a block is no longer lost when you leave the block (or save while inside it).
 - A graph that cannot be read, or that exists both as a folder and as a single file, no longer empties the Graphs panel: it is listed, greyed out, with the reason. Opening it answers 422 instead of 500.

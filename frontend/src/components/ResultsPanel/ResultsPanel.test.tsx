@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { cleanup, render, screen, fireEvent, act, within } from '@testing-library/react';
-import { ResultsPanel } from './ResultsPanel';
+import { ResultsPanel, RESULTS_PANEL_KEY, loadPanelState } from './ResultsPanel';
 import { useTabStore, type LogEntry } from '../../store/tabStore';
 import { useRunStore } from '../../store/runStore';
 import { useWorkerStore } from '../../store/workerStore';
@@ -66,6 +66,10 @@ function seedLogs(logs: LogEntry[]) {
 
 beforeEach(() => {
   useI18n.setState({ locale: 'en' });
+  // The cases below were written for a dock that starts open at 200px; since
+  // phase 5 that is a choice the user made and the dock remembered. The
+  // fresh, collapsed start has its own block at the bottom.
+  localStorage.setItem(RESULTS_PANEL_KEY, JSON.stringify({ height: 200, collapsed: false, userSet: true }));
   useTabStore.setState({ tabs: [], activeTabId: null as unknown as string, clipboard: null });
   useTabStore.getState().addTab('test');
   useRunStore.setState({ runs: [], total: 0, activeCount: 0 });
@@ -991,5 +995,59 @@ describe('plugin panels in the dock', () => {
     render(<ResultsPanel />);
     act(() => { seedPanel('Late'); });
     expect(screen.getByTestId('plugin-dock-tab-sweeps:main')).toHaveTextContent('Late');
+  });
+});
+
+// Phase 5 (density): a fresh dock is the tab row alone, the first output
+// opens it, and the user's own height and state survive a reload.
+describe('ResultsPanel — collapsed until there is output', () => {
+  beforeEach(() => {
+    localStorage.removeItem(RESULTS_PANEL_KEY);
+  });
+
+  const panel = () => document.querySelector('[data-tour="results"]') as HTMLElement;
+  const log = (message: string): Omit<LogEntry, 'timestamp'> => ({ message, type: 'info' });
+
+  it('starts collapsed with the tabs still showing, and opens at 160px on the first output', () => {
+    render(<ResultsPanel />);
+    expect(panel().style.height).toBe('');
+    expect(screen.getByText(t('results.title'))).toBeTruthy();
+    expect(screen.getByText(t('runs.tab'))).toBeTruthy();
+    expect(screen.queryByText(t('results.empty'))).toBeNull();
+    act(() => {
+      useTabStore.getState().addLog(log('hello'));
+    });
+    expect(panel().style.height).toBe('160px');
+    // Not remembered: the user chose nothing.
+    expect(localStorage.getItem(RESULTS_PANEL_KEY)).toBeNull();
+  });
+
+  it('a tab click on the collapsed dock opens it on that tab and remembers it', () => {
+    render(<ResultsPanel />);
+    fireEvent.click(screen.getByText(t('runs.tab')));
+    expect(panel().style.height).toBe('160px');
+    expect(JSON.parse(localStorage.getItem(RESULTS_PANEL_KEY)!)).toEqual({ height: 160, collapsed: false, userSet: true });
+  });
+
+  it('a dock the user closed stays closed when output arrives, and after a reload', () => {
+    render(<ResultsPanel />);
+    fireEvent.click(screen.getByLabelText(t('results.expand')));
+    fireEvent.click(screen.getByLabelText(t('results.collapse')));
+    act(() => {
+      useTabStore.getState().addLog(log('hello'));
+    });
+    expect(panel().style.height).toBe('');
+    cleanup();
+    render(<ResultsPanel />);
+    expect(panel().style.height).toBe('');
+  });
+
+  it('reads back a remembered height, clamped, and treats junk as the default', () => {
+    localStorage.setItem(RESULTS_PANEL_KEY, JSON.stringify({ height: 9999, collapsed: false, userSet: true }));
+    expect(loadPanelState()).toEqual({ height: 600, collapsed: false, userSet: true });
+    localStorage.setItem(RESULTS_PANEL_KEY, '{not json');
+    expect(loadPanelState()).toEqual({ height: 160, collapsed: true, userSet: false });
+    localStorage.setItem(RESULTS_PANEL_KEY, JSON.stringify({ height: 300, collapsed: false }));
+    expect(loadPanelState()).toEqual({ height: 160, collapsed: true, userSet: false });
   });
 });

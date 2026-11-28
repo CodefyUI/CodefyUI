@@ -84,7 +84,9 @@ function categoryNames(container: HTMLElement): string[] {
 
 beforeEach(() => {
   useI18n.setState({ locale: 'en' });
-  useUIStore.setState({ tooltipsEnabled: true, beginnerMode: false });
+  useUIStore.setState({
+    tooltipsEnabled: true, beginnerMode: false, paletteDensity: 'full', paletteHintSeen: false,
+  });
   // Every case that does not seed a catalog runs against an empty, unloaded
   // one — the base install, where no palette row says anything about packs
   // and nothing in the library came from a plugin.
@@ -1204,5 +1206,58 @@ describe('NodesTab — formulas in descriptions', () => {
     expect(screen.queryByText('Conv2d')).toBeNull();
     const item = screen.getByText('Linear').parentElement as HTMLElement;
     await waitFor(() => expect(item.querySelector('.katex')).toBeTruthy());
+  });
+});
+
+// Phase 5 (density): one description line, a names-only toggle, and the
+// drag hint only until the first drop or while a search finds nothing.
+describe('NodesTab — density', () => {
+  const seeded = () =>
+    seedStore({ categorized: { Data: [def('Dataset', 'Data', 'Loads a dataset')], IO: [def('Print', 'IO')] } });
+
+  it('draws one description line, with the text in title when tooltips are off', () => {
+    useUIStore.setState({ tooltipsEnabled: false });
+    seeded();
+    render(<NodesTab />);
+    const desc = screen.getByText('Loads a dataset').closest('div[title]');
+    expect(desc?.getAttribute('title')).toBe('Loads a dataset');
+  });
+
+  it('leaves title off the description while the hover tooltip shows it', () => {
+    seeded();
+    render(<NodesTab />);
+    expect(screen.getByText('Loads a dataset').closest('div[title]')).toBeNull();
+  });
+
+  it('the toggle switches to names only, says so in aria-pressed, and remembers it', () => {
+    seeded();
+    render(<NodesTab />);
+    const toggle = screen.getByTestId('palette-density-toggle');
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    expect(toggle.getAttribute('aria-label')).toBe('Names only');
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    expect(screen.queryByText('Loads a dataset')).toBeNull();
+    expect(screen.getByText('Dataset')).toBeTruthy();
+    expect(localStorage.getItem('codefyui-palette-density')).toBe('names');
+    fireEvent.click(toggle);
+    expect(screen.getByText('Loads a dataset')).toBeTruthy();
+    expect(localStorage.getItem('codefyui-palette-density')).toBe('full');
+  });
+
+  it('shows the toggle with a single category too', () => {
+    seedStore({ categorized: { Data: [def('Dataset', 'Data')] } });
+    render(<NodesTab />);
+    expect(screen.getByTestId('palette-density-toggle')).toBeTruthy();
+    expect(screen.queryByLabelText('Expand all')).toBeNull();
+  });
+
+  it('drops the hint once a node has been placed, and brings it back for an empty search', () => {
+    seeded();
+    useUIStore.setState({ paletteHintSeen: true });
+    render(<NodesTab />);
+    expect(screen.queryByTestId('palette-hint')).toBeNull();
+    fireEvent.change(screen.getByPlaceholderText('Search nodes...'), { target: { value: 'zzz-nothing' } });
+    expect(screen.getByTestId('palette-hint')).toBeTruthy();
   });
 });

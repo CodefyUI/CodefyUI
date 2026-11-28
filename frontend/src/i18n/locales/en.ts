@@ -241,6 +241,8 @@ const en = {
   'palette.noMatch': 'No matching nodes',
   'palette.empty': 'No nodes available',
   'palette.hint': 'Drag nodes onto the canvas',
+  'palette.namesOnly': 'Names only',
+  'palette.namesOnly.title': 'Show node names only, without the description line',
   'palette.fromPlugin': 'From plugin: {plugin}',
   'palette.fromProjectMods': 'From this project’s mods/ folder',
   'palette.fromCustom': 'Custom node, installed on this computer',
@@ -1374,8 +1376,14 @@ const en = {
   'projects.mods.warning': 'These files are Python. Trusting them runs them in this CodefyUI server with your permissions. The scan result is a hint, not a sandbox.',
   'projects.mods.files': 'Files in mods/',
   'projects.mods.lines': '{count} lines',
+  'projects.mods.linesOne': '1 line',
   'projects.mods.clean': 'no findings',
   'projects.mods.finding.import': 'Line {line} imports {module}: needs {capability}',
+  // A capability's name in a sentence ("needs network"); the row's tooltip
+  // carries pluginCenter.cap.*, which says what granting it costs.
+  'projects.mods.capability.network': 'network',
+  'projects.mods.capability.filesystem': 'file access',
+  'projects.mods.capability.processEnv': 'process and environment access',
   'projects.mods.finding.blockedImport': 'Line {line} imports {module}, which project mods may never import',
   'projects.mods.finding.refused': 'Line {line} uses a call or attribute the scan does not allow',
   'projects.mods.finding.refusedNamed': 'Line {line} uses {construct}, which the scan does not allow',

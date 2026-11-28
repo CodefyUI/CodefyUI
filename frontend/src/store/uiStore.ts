@@ -90,7 +90,21 @@ export interface UIPreferences {
   beginnerMode?: boolean;
 }
 
+/** How the node palette draws a row: name and one line of description, or the
+ * name alone (phase 5). */
+export type PaletteDensity = 'full' | 'names';
+
 interface UIState {
+  /** Node palette rows: name + description, or names only. Persisted. */
+  paletteDensity: PaletteDensity;
+  togglePaletteDensity: () => void;
+  /**
+   * Whether a node or preset has ever been dropped from the palette. Until
+   * then the palette shows its "Drag nodes onto the canvas" hint; after, the
+   * hint only returns when a search finds nothing. Persisted.
+   */
+  paletteHintSeen: boolean;
+  markPaletteHintSeen: () => void;
   tooltipsEnabled: boolean;
   toggleTooltips: () => void;
   gridSnapEnabled: boolean;
@@ -265,6 +279,25 @@ interface UIState {
 }
 
 const TOOLTIPS_KEY = 'codefyui-tooltips';
+const PALETTE_DENSITY_KEY = 'codefyui-palette-density';
+const PALETTE_HINT_KEY = 'codefyui-palette-hint-seen';
+
+/** Storage can be unavailable (private mode, a blocked iframe): that reads as
+ * "nothing saved" and a write that fails is simply not remembered. */
+const readKey = (key: string): string | null => {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+};
+const writeKey = (key: string, value: string): void => {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* not remembered */
+  }
+};
 const GRIDSNAP_KEY = 'codefyui-gridsnap';
 const BEGINNER_KEY = 'codefyui-beginner-mode';
 const LAYOUT_MODE_KEY = 'codefyui-last-layout-mode';
@@ -330,6 +363,20 @@ const loadFontSize = (): FontSize => {
 };
 
 export const useUIStore = create<UIState>((set) => ({
+  paletteDensity: readKey(PALETTE_DENSITY_KEY) === 'names' ? 'names' : 'full',
+  togglePaletteDensity: () =>
+    set((state) => {
+      const next: PaletteDensity = state.paletteDensity === 'names' ? 'full' : 'names';
+      writeKey(PALETTE_DENSITY_KEY, next);
+      return { paletteDensity: next };
+    }),
+  paletteHintSeen: readKey(PALETTE_HINT_KEY) === 'true',
+  markPaletteHintSeen: () =>
+    set((state) => {
+      if (state.paletteHintSeen) return state;
+      writeKey(PALETTE_HINT_KEY, 'true');
+      return { paletteHintSeen: true };
+    }),
   tooltipsEnabled: localStorage.getItem(TOOLTIPS_KEY) !== 'false',
   toggleTooltips: () =>
     set((state) => {

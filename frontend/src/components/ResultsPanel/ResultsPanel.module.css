@@ -164,7 +164,8 @@
   display: flex;
   align-items: baseline;
   gap: var(--sp-3);
-  padding: var(--sp-3) var(--sp-4);
+  /* 4px above and below, not 8 (phase 5). */
+  padding: var(--sp-2) var(--sp-4);
   margin-bottom: 1px;
 }
 

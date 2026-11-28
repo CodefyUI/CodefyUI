@@ -1851,6 +1851,26 @@ describe('Toolbar', () => {
     expect(css).not.toMatch(/\.logo\w* \{ display: none/);
   });
 
+  // Below 1400px Custom Nodes moves into the File menu the same way (phase
+  // 5), so the 1280px toolbar is one row.
+  it('Custom Nodes: a toolbar button from 1400px, a File-menu row below', async () => {
+    await renderSettled(<Toolbar />);
+    const button = screen.getByTestId('toolbar-custom-nodes');
+    expect(button.className).toContain(styles.wideOnlyMid);
+    fireEvent.click(screen.getByText('File'));
+    const rows = screen.getAllByText('Custom Nodes').filter((el) => el !== button);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].className).toContain(styles.narrowOnlyMid);
+    fireEvent.click(rows[0]);
+    expect(useUIStore.getState().customNodeManagerOpen).toBe(true);
+    const css = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), 'Toolbar.module.css'), 'utf8',
+    ).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\s+/g, ' ');
+    const media = css.match(/@media \(max-width: 1399px\) \{(.*?\})\s*\}/)?.[1] ?? '';
+    expect(media).toMatch(/\.ghost\.wideOnlyMid \{ display: none; \}/);
+    expect(media).toMatch(/\.menuItem\.narrowOnlyMid \{ display: block; \}/);
+  });
+
   // ── Custom Node Manager open/close ──────────────────────────────────
   //
   // The Custom Nodes manager issue. This button used to open a manager of the

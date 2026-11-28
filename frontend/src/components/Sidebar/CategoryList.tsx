@@ -17,6 +17,9 @@ interface CategoryListProps<T> {
   colorFor?: (category: string) => string;
   /** Display name per category; defaults to the raw key. */
   labelFor?: (category: string) => string;
+  /** A control of the host's, first in the list toolbar (the palette's
+   * density toggle). With one, the toolbar shows even for a single category. */
+  toolbarStart?: ReactNode;
 }
 
 // '#607D8B' (the pre-lift value of --cat-utility) is a repo-wide "unknown
@@ -47,6 +50,7 @@ export function CategoryList<T>({
   renderItem,
   colorFor = defaultColorFor,
   labelFor = (category) => category,
+  toolbarStart,
 }: CategoryListProps<T>) {
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
   const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -83,8 +87,10 @@ export function CategoryList<T>({
 
   return (
     <div className={styles.listWrap}>
-      {showIndex && (
+      {(showIndex || toolbarStart) && (
         <div className={styles.listToolbar}>
+          {toolbarStart}
+          {showIndex && (<>
           <button
             type="button"
             className={styles.toolbarButton}
@@ -103,6 +109,7 @@ export function CategoryList<T>({
           >
             <CollapseAllIcon size={13} />
           </button>
+          </>)}
         </div>
       )}
 
