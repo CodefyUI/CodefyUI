@@ -25,6 +25,7 @@ import { layoutAllTargetIds, layoutFitBounds, layoutTargetsChanged } from '../ut
 import { resolveUnboundDocument } from '../utils/openExample';
 import { subgraphViewPath } from '../utils/subgraph';
 import { MAX_WORKSPACE_GRAPH_BYTES, MAX_WORKSPACE_TABS } from '../utils/workspaceLimits';
+import { definitionsWithDynamicPorts } from '../utils/livePorts';
 import { applyGraphOps, type ApplyOutcome, type GraphOp, type OpResult } from './ops';
 import { registerNodeRenderer, type PluginNodeRenderer } from './nodeRenderers';
 import {
@@ -837,7 +838,7 @@ export function buildPluginAPI(
     },
     graph: {
       getGraph: () => useTabStore.getState().getSerializedGraph(),
-      getNodeDefinitions: () => useNodeDefStore.getState().definitions,
+      getNodeDefinitions: () => definitionsWithDynamicPorts(useNodeDefStore.getState().definitions),
       applyOperations: (ops) => commitGraphOperations(ops, pluginId),
       onGraphChanged: (cb) => {
         // Track the unsubscribe so the host can tear it down on a dev

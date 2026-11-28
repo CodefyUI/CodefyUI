@@ -15,6 +15,8 @@ import {
 import { autoLayout } from '../utils/autoLayout';
 import { computeSegmentNodes } from '../utils/segmentPath';
 import { occupantsOf } from '../utils/occupiedInput';
+import { livePorts, staleEdges } from '../utils/livePorts';
+import { grownSwitchParams } from '../utils/switchNode';
 
 export type GraphOp =
   | { op: 'add_node'; node_type: string; ref?: string;
@@ -63,6 +65,12 @@ export interface OpResult {
    * the wires it replaced (#562). Absent when nothing was replaced.
    */
   replaced_edge_ids?: string[];
+  /**
+   * Set by `set_params` when the new values took away ports that had wires
+   * (a PythonScript's `output_ports` lowered): the ids of the wires removed
+   * with them, as the canvas removes them. Absent when none were.
+   */
+  removed_edge_ids?: string[];
 }
 
 export interface ApplyOutcome {
@@ -330,18 +338,25 @@ export function applyGraphOps(
         }
 
         if (!isTrigger) {
+          // The ports this node instance has NOW -- its params expanded the
+          // way the canvas draws them (PythonScript `output_ports`, Split
+          // `chunks`, ...), including a port an earlier op in this batch
+          // created. Not the static definition, which knows only the
+          // defaults (round 6 H1).
           const sDef = sourceNode.data.definition;
           const tDef = targetNode.data.definition;
           if (sDef) {
-            const out = sDef.outputs.find((o) => o.name === op.source_handle);
+            const outputs = livePorts(sourceNode).outputs;
+            const out = outputs.find((o) => o.name === op.source_handle);
             if (!out) {
-              const names = sDef.outputs.map((o) => o.name).join(', ') || '(none)';
+              const names = outputs.map((o) => o.name).join(', ') || '(none)';
               return fail(`connect: '${sDef.node_name}' has no output '${op.source_handle}'; outputs: ${names}`);
             }
             if (tDef) {
-              const inp = tDef.inputs.find((i) => i.name === op.target_handle);
+              const inputs = livePorts(targetNode).inputs;
+              const inp = inputs.find((i) => i.name === op.target_handle);
               if (!inp) {
-                const names = tDef.inputs.map((i) => i.name).join(', ') || '(none)';
+                const names = inputs.map((i) => i.name).join(', ') || '(none)';
                 return fail(`connect: '${tDef.node_name}' has no input '${op.target_handle}'; inputs: ${names}`);
               }
               if (!isValidConnection(out.data_type, inp.data_type)) {
@@ -374,6 +389,16 @@ export function applyGraphOps(
           edges = edges.filter((e) => !gone.has(e.id));
         }
         edges = [...edges, edge];
+        // A wire on a Switch's last input adds another, as on the canvas
+        // (`tabStore.onConnect`, #655), so a batch can wire input_2 next.
+        if (!isTrigger) {
+          const grown = grownSwitchParams(targetNode, targetHandle);
+          if (grown) {
+            nodes = nodes.map((n) =>
+              n.id === targetId ? { ...n, data: { ...n.data, params: grown } } : n,
+            );
+          }
+        }
         dirty.add(targetId);
         mutated = true;
         results.push(
@@ -401,14 +426,30 @@ export function applyGraphOps(
           results.push({ index, ok: true, node_id: id });
           return;
         }
+        const nextParams = { ...node.data.params, ...op.params };
+        // A param can take ports away (PythonScript `output_ports` lowered,
+        // Split `chunks`); the wires on them go too, exactly as a param edit
+        // on the canvas drops them (`tabStore.updateNodeParams`), and a
+        // consumer that lost its input is dirty in its own right.
+        const stale = staleEdges(node, nextParams, edges);
         nodes = nodes.map((n) =>
           n.id === id
-            ? { ...n, data: { ...n.data, params: { ...n.data.params, ...op.params } } }
+            ? { ...n, data: { ...n.data, params: nextParams } }
             : n,
         );
+        if (stale.size > 0) {
+          for (const edge of edges) {
+            if (stale.has(edge.id) && edge.target !== id) dirty.add(edge.target);
+          }
+          edges = edges.filter((e) => !stale.has(e.id));
+        }
         dirty.add(id);
         mutated = true;
-        results.push({ index, ok: true, node_id: id });
+        results.push(
+          stale.size > 0
+            ? { index, ok: true, node_id: id, removed_edge_ids: [...stale] }
+            : { index, ok: true, node_id: id },
+        );
         return;
       }
 

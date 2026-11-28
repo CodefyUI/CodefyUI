@@ -31,6 +31,30 @@ export interface ParamDefinition {
   option_packs?: Record<string, string> | null;
 }
 
+/**
+ * How a node's ports follow its params (apiVersion 7). Port names are
+ * `prefix` + index, counting from `first_index`, for the count in
+ * `count_param` clamped into `min..max`; `types_param` holds their data types
+ * as a comma list when the node has one. `fixed` ports follow the counted
+ * ones whatever the count. `grows_on_connect`: a wire on the last counted
+ * input adds another.
+ */
+export interface DynamicPorts {
+  count_param: string;
+  prefix: string;
+  first_index: number;
+  min: number;
+  max: number;
+  types_param?: string;
+  fixed?: string[];
+  grows_on_connect?: boolean;
+}
+
+export interface DynamicPortsInfo {
+  inputs?: DynamicPorts;
+  outputs?: DynamicPorts;
+}
+
 export interface NodeDefinition {
   node_name: string;
   category: string;
@@ -42,6 +66,13 @@ export interface NodeDefinition {
   inputs: PortDefinition[];
   outputs: PortDefinition[];
   params: ParamDefinition[];
+  /**
+   * Present when some ports follow params (PythonScript, Split,
+   * ComposeTransform, Switch): which param sets them and how they are named.
+   * The `inputs`/`outputs` lists above are the default params' ports.
+   * apiVersion 7.
+   */
+  dynamic_ports?: DynamicPortsInfo;
   /** Package Center: the optional pack this node needs before it can run at
    *  all. Absent / null = covered by the base install. */
   requires_pack?: string | null;
@@ -105,6 +136,13 @@ export interface OpResult {
    * wire beside the existing one.
    */
   replaced_edge_ids?: string[];
+  /**
+   * Set by `set_params` when the new values removed ports that had wires (a
+   * PythonScript's `output_ports` lowered): the ids of the wires removed with
+   * them, as a param edit on the canvas removes them. Absent when none were.
+   * apiVersion 7; older hosts left such a wire in place.
+   */
+  removed_edge_ids?: string[];
 }
 
 export interface ApplyResult {

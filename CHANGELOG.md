@@ -24,6 +24,8 @@ received — each links to the release it was published as.
 
 ### Fixed
 
+- **Plugins can wire the ports a node's params create.** `applyOperations` checked a `connect` against a node's default ports, so after `add_node PythonScript {output_ports: 2}` a wire from `out2` was refused. It now checks the ports the node instance has, the ones the canvas draws (PythonScript, Split, ComposeTransform, Switch), including ports created earlier in the same batch. A `set_params` that removes ports removes their wires as the canvas does and lists them in `removed_edge_ids`, and a wire on a Switch's last input adds another input as on the canvas. `getNodeDefinitions()` gives such nodes a `dynamic_ports` field naming the param that sets each side's ports.
+
 - **The bundled digits examples run in a project again.** In 3.4.0's default project mode `CSVReader` resolved `data/samples/digits.csv` inside the project, so the seven examples that read it failed with "file not found"; only `data/samples/iris.csv` had been exempted. Every reader node (`CSVReader`, `DocumentLoader`, `TextCorpusDataset`) now shares one rule: a relative `data/samples/...` path without `..` names a bundled sample, read from the project when the project has a file at that path and from the install otherwise, whatever the working directory. A missing file's error names every place that was looked in and, when the path looks like a sample, lists the samples that exist.
 
 ## [3.4.0] — 2026-11-28
