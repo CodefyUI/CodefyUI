@@ -306,7 +306,10 @@ describe('ProjectDialog keyboard', () => {
     submit.focus();
     fireEvent.click(submit);
     await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('/etc'));
-    expect(document.activeElement).toBe(input);
+    // The field is focused by an effect that runs after the render that shows
+    // the alert, so the alert being there does not mean the focus has moved:
+    // asserting it on the next line failed once on CI (main, 3.4.0 commit).
+    await waitFor(() => expect(document.activeElement).toBe(input));
     expect([input.selectionStart, input.selectionEnd]).toEqual([0, 4]);
 
     // Even from <body> (where a disabled button leaves the focus).

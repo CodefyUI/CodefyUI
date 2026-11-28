@@ -119,9 +119,12 @@ jobs:
   test-windows:
     name: pytest (Windows, Python 3.12)
     runs-on: windows-latest
-    # Windows runners are slower than ubuntu and the torch wheel is large;
-    # the ubuntu job's 20 minutes is not enough headroom here.
-    timeout-minutes: 40
+    # Windows runners are slower than ubuntu and the torch wheel is large.
+    # Measured over the 3.4.0 pull requests: 27 to 37 minutes, and one run on
+    # main was cancelled at the old 40-minute limit with the suite still
+    # going. 60 leaves room for a slow runner without hiding a real hang
+    # (the tests' own hang guards fail long before that).
+    timeout-minutes: 60
     defaults:
       run:
         shell: pwsh
