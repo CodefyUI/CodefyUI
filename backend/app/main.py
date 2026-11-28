@@ -378,6 +378,7 @@ async def _lifespan_body(app: FastAPI):
     # core/mods.py and is the one every reload and switch goes through.
     from .core import mods as project_mods
 
+    project_mods.set_server_process()
     mods_status = project_mods.load_project_mods(settings.PROJECT_DIR)
     if settings.PROJECT_DIR is not None and mods_status["state"] != "none":
         logger.info("Project mods: %s, %d node(s) loaded", mods_status["state"],

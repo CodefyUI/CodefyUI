@@ -749,5 +749,6 @@ def test_project_restore_reinstalls_a_git_pin(remote, tmp_path, monkeypatch, cap
 
     lifecycle.uninstall_plugin("hosted-demo", builtin_ids=(), catalog={"plugins": {}})
     remote.commit("2.0.0")
-    assert project_cli.cmd_restore(argparse.Namespace(dir=str(proj))) == 0
+    # --yes: the pin is not in the lockfile, and a test has no terminal (4C).
+    assert project_cli.cmd_restore(argparse.Namespace(dir=str(proj), yes=True)) == 0
     assert _entry()["sha"] == remote.first

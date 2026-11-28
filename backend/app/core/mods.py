@@ -404,6 +404,17 @@ _loaded = LoadedMods()
 #: recommended.
 _ran: set[str] = set()
 
+#: True only in the server process (set by the app's lifespan). Anywhere
+#: else -- the CLI, an exported script, ``run_graph.py`` -- mods load only on
+#: a trust record that matches the tree exactly: no owner shortcut, and
+#: nothing is recorded.
+_server_process = False
+
+
+def set_server_process() -> None:
+    global _server_process
+    _server_process = True
+
 
 def package_name(project: Path) -> str:
     from . import projects
@@ -549,6 +560,7 @@ def load_project_mods(project: Path | None, *, cli: bool = False) -> dict[str, A
     """Load *project*'s mods if, and only if, the user trusted exactly this
     tree (or it is an owned project whose HEAD has not moved). *cli*: the
     command line loads only on a matching trust record. Returns the status."""
+    cli = cli or not _server_process
     with _lock:
         unload_project_mods()
         if project is None:
