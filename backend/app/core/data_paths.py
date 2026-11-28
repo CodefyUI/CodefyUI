@@ -509,7 +509,8 @@ def bundled_sample_candidates(path_str: str) -> list[Path] | None:
     when *path_str* is not such a path.
 
     1. The open project (project mode only): a file the user put at that
-       path in their project wins over the bundled one.
+       path in their project wins over the bundled one -- unless it resolves
+       outside the project (a symbolic link), when it is left out.
     2. The working directory: an exported script run next to its own
        ``data/samples`` folder, and the server's old reading (it runs from
        ``backend/``).
@@ -520,7 +521,18 @@ def bundled_sample_candidates(path_str: str) -> list[Path] | None:
         return None
     candidates: list[Path] = []
     if settings.PROJECT_DIR is not None:
-        candidates.append(Path(settings.PROJECT_DIR).resolve() / relative)
+        project = Path(settings.PROJECT_DIR).resolve()
+        own = project / relative
+        # Only when it resolves inside the project: a cloned project holding
+        # ``data/samples/iris.csv -> /anything`` must not read a file outside
+        # it while looking like the bundled sample. Skipped, not refused --
+        # the install's copy is the next candidate.
+        try:
+            inside = own.resolve().is_relative_to(project)
+        except (OSError, RuntimeError):
+            inside = False
+        if inside:
+            candidates.append(own)
     candidates.append(Path.cwd() / relative)
     candidates.append(_BACKEND_DIR / relative)
     seen: list[Path] = []

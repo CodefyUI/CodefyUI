@@ -233,3 +233,30 @@ def test_a_digits_example_runs_in_project_mode(open_project, elsewhere):
     assert csv_nodes
     for node_id in csv_nodes:
         assert results[node_id]["tensor"].shape[0] == 1797
+
+
+def test_a_project_sample_linking_outside_the_project_is_skipped(open_project, elsewhere, tmp_path):
+    outside = tmp_path / "outside.csv"
+    outside.write_bytes(b"secret,1\n2,3\n")
+    link = open_project / "data" / "samples" / "iris.csv"
+    link.parent.mkdir(parents=True)
+    try:
+        link.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("symbolic links cannot be made here")
+    assert link not in bundled_sample_candidates("data/samples/iris.csv")
+    assert resolve_bundled_sample("data/samples/iris.csv") == _BACKEND_DIR / "data/samples/iris.csv"
+    out = CSVReaderNode().execute({}, {"path": "data/samples/iris.csv", "target_column": "species"})
+    assert out["tensor"].shape[0] == 150
+
+
+def test_a_project_sample_linking_inside_the_project_is_used(open_project, elsewhere):
+    real = open_project / "mine.csv"
+    real.write_bytes(b"a,b\n1,2\n")
+    link = open_project / "data" / "samples" / "digits.csv"
+    link.parent.mkdir(parents=True)
+    try:
+        link.symlink_to(real)
+    except (OSError, NotImplementedError):
+        pytest.skip("symbolic links cannot be made here")
+    assert resolve_bundled_sample("data/samples/digits.csv") == link
