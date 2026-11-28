@@ -523,6 +523,9 @@ describe('Mods consent', () => {
     // plugin gate's text about a plugin manifest.
     expect(rows[1].textContent).toContain('Line 3 imports socket: needs network');
     expect(rows[1].textContent).not.toContain('manifest');
+    // The name in the sentence, the cost in its tooltip (phase 5).
+    const finding = within(rows[1]).getByText('Line 3 imports socket: needs network');
+    expect(finding.getAttribute('title')).toBe('network: reach any host, and write what it downloads to disk');
     fireEvent.click(within(dialog).getByTestId('mods-trust'));
     await waitFor(() => expect(api.trustProjectMods).toHaveBeenCalledWith(MODS_DIGEST, false));
     await waitFor(() => expect(screen.queryByTestId('project-mods-consent')).toBeNull());

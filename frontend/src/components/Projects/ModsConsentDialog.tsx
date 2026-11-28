@@ -4,7 +4,7 @@ import {
   formatBytes, getProjectMods, ProjectError, trustProjectMods,
   type ModsFile, type ModsFinding, type ModsScan,
 } from '../../api/projects';
-import { useI18n } from '../../i18n';
+import { useI18n, type TranslationKey } from '../../i18n';
 import { capabilityKey } from '../PluginCenter/pluginStatus';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useProjectStore } from '../../store/projectStore';
@@ -184,6 +184,28 @@ function capabilityText(t: Translate, id: string): string {
   return key ? t(key) : id;
 }
 
+const CAPABILITY_NAME: Record<string, TranslationKey | undefined> = {
+  network: 'projects.mods.capability.network',
+  filesystem: 'projects.mods.capability.filesystem',
+  'process-env': 'projects.mods.capability.processEnv',
+};
+
+/** A capability's NAME in the page's language, for a sentence ("needs
+ * network"), or the raw id for one this build has no name for. The sentence
+ * above starts with the English id in every language, which put
+ * "需要 network：可連線任何主機…" in the zh-TW prompt (phase 5). */
+function capabilityName(t: Translate, id: string): string {
+  const key = CAPABILITY_NAME[id];
+  return key ? t(key) : id;
+}
+
+/** The tooltip on an import finding: what the capability costs to grant. */
+export function findingTitle(t: Translate, finding: ModsFinding): string | undefined {
+  return finding.kind === 'import' && finding.capability
+    ? capabilityText(t, finding.capability)
+    : undefined;
+}
+
 /**
  * The scan's finding in the words of a project's mods (phase 4C review,
  * round 1): the plugin gate's own text tells an author to edit a plugin
@@ -196,7 +218,7 @@ export function findingText(t: Translate, finding: ModsFinding): string {
     case 'import':
       return t('projects.mods.finding.import', {
         line, module: finding.module ?? '',
-        capability: capabilityText(t, finding.capability ?? ''),
+        capability: capabilityName(t, finding.capability ?? ''),
       });
     case 'blocked_import':
       return t('projects.mods.finding.blockedImport', { line, module: finding.module ?? '' });
@@ -211,10 +233,14 @@ export function findingText(t: Translate, finding: ModsFinding): string {
   }
 }
 
-function ModsFileRow({ file, mark }: { file: ModsFile; mark: Mark }) {
+export function ModsFileRow({ file, mark }: { file: ModsFile; mark: Mark }) {
   const { t } = useI18n();
   const facts = [formatBytes(file.size)];
-  if (file.lines !== undefined) facts.push(t('projects.mods.lines', { count: file.lines }));
+  if (file.lines !== undefined) {
+    facts.push(file.lines === 1
+      ? t('projects.mods.linesOne')
+      : t('projects.mods.lines', { count: file.lines }));
+  }
   const never = file.loads === false;
   return (
     <li className={`${styles.modsRow} ${never ? styles.modsRowNever : ''}`} data-testid="mods-file">
@@ -233,7 +259,9 @@ function ModsFileRow({ file, mark }: { file: ModsFile; mark: Mark }) {
       {file.role === 'node' && (
         <div className={styles.modsFacts}>
           {file.finding ? (
-            <span className={styles.rowWarn}>{findingText(t, file.finding)}</span>
+            <span className={styles.rowWarn} title={findingTitle(t, file.finding)}>
+              {findingText(t, file.finding)}
+            </span>
           ) : (
             <span className={styles.hint}>{t('projects.mods.clean')}</span>
           )}
