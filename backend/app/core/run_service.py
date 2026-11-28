@@ -2777,6 +2777,16 @@ class RunService:
         checked here: placement skips the workers that lack types, and the
         executor checks the one it picked."""
         worker_id, _devices = entry_target(options)
+        if worker_id != TARGET_WORKER_LOCAL:
+            # A project's own mods/ nodes exist only in this server, by
+            # the user's trust in this project: a worker never runs them
+            # (phase 4C), so ``any`` is refused too, before anything starts.
+            mods_types = sorted(t for t in node_types if t.startswith("project:"))
+            if mods_types:
+                raise RunSubmitError(
+                    "this graph uses nodes from the project's own mods/ ("
+                    + ", ".join(mods_types) + "), which run only on this "
+                    "server; choose This server as the target")
         if worker_id in (TARGET_WORKER_LOCAL, TARGET_WORKER_ANY) \
                 or self._workers is None:
             return

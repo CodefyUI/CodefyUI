@@ -136,6 +136,7 @@ describe('issueText', () => {
     issue('switch_input_types_differ', ENC, { types: 'STRING, TENSOR' }),
     issue('multiple_sources', DEC, { port: 'tensor', sources: [ENC, LOSS], count: 2 }),
     issue('param_not_an_option', ENC, { param: 'type', value: 'Adamm', options: 'Adam, SGD' }),
+    issue('unknown_node_type', ENC, { type: 'project:Focal', reason: 'mods_not_loaded' }),
   ];
 
   it.each(['en', 'zh-TW'] as const)(
@@ -164,6 +165,14 @@ describe('issueText', () => {
     );
     expect(issueText(BY_CODE[10], NODES, t)).toBe(
       'The graph has a loop: Encoder -> Decoder -> Encoder',
+    );
+  });
+
+  it('says a project mods type is not loaded, not "not installed" (phase 4C)', () => {
+    const finding = BY_CODE.find((f) => f.params?.reason === 'mods_not_loaded')!;
+    expect(issueText(finding, NODES, t)).toBe(
+      'Encoder: "project:Focal" comes from this project’s mods/, which are not loaded. '
+      + 'Review mods/ from the project menu to load them.',
     );
   });
 

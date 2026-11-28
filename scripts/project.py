@@ -201,7 +201,7 @@ def _validate_one_graph(store, base: str) -> list[str]:
     errors = validate_graph(nodes, edges, preset_fallback=fb)
     if errors:
         first = errors[0]
-        if first.startswith("Unknown node type"):
+        if first.startswith("Unknown node type") and " -- " not in first:
             first = first + " -- run `cdui project restore` (or install the plugin that provides it)"
         return [f"invalid_graph: {first}"]
     return []

@@ -593,3 +593,13 @@ def current_status(project: Path | None) -> dict[str, Any]:
         "skipped": list(_loaded.skipped) if mine else [],
         "restart_recommended": bool(_ran - {str(project)}),
     }
+
+
+def unloaded_reason(node_type: str) -> str | None:
+    """Why a ``project:`` type is not registered, in a sentence a run,
+    validate or publish error can carry; None for any other type."""
+    if not str(node_type).startswith(f"{PROJECT_PREFIX}:"):
+        return None
+    return ("it comes from this project's mods/ folder, which is not loaded: "
+            "review and trust it in the editor (Review mods/), or with "
+            "`cdui project mods --trust`")

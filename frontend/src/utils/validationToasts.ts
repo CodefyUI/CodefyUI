@@ -166,6 +166,11 @@ function keyFor(issue: ValidationIssue): TranslationKey | null {
   if (issue.code === 'missing_input' && issue.params?.cause != null) {
     return 'graphValidation.missing_input.bypassed';
   }
+  // A type from the project's own mods/ is not "not installed": it is there
+  // and not loaded, and the fix is the review, not the Package Center.
+  if (issue.code === 'unknown_node_type' && issue.params?.reason === 'mods_not_loaded') {
+    return 'graphValidation.unknown_node_type.modsNotLoaded';
+  }
   return key;
 }
 

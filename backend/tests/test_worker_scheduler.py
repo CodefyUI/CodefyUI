@@ -752,3 +752,19 @@ def test_every_reason_carries_a_code_and_params(data_label):
         "any_no_worker_mount", {"devices": "cuda", "mount": "data"})
     assert scheduler.explain_reason(
         _Entry("r", "cpu", {"device": "cpu"})) is None
+
+
+def test_project_mods_nodes_never_go_to_a_worker():
+    """Phase 4C: a project's own mods/ nodes exist only in this server (by
+    the user's trust in this project). A run that uses one is refused before
+    submit for a named worker and for ``any``; This server takes it."""
+    service = _service(_registry_with(_worker("full", "cpu")))
+    check = service._check_worker_catalog
+    types = frozenset({"Start", "project:FocalLoss"})
+    for target in ("full", "any"):
+        with pytest.raises(RunSubmitError) as refused:
+            check(_options(worker=target), types)
+        assert "project:FocalLoss" in str(refused.value)
+        assert "choose This server" in str(refused.value)
+    check(_options(worker="local"), types)
+    check(_options(worker="full"), frozenset({"Start", "FocalLoss"}))

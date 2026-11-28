@@ -354,3 +354,20 @@ async def test_consent_with_a_stale_digest_is_refused(http, isolated):  # noqa: 
     assert resp.json()["mods"]["nodes"] == ["project:FocalLoss"]
     assert registry.get("project:FocalLoss") is not None
     assert projects._trust_entries()  # recorded in the user's data
+
+
+# ── Wording: run / validate / publish ────────────────────────────────────
+
+def test_validate_explains_a_project_type_that_is_not_loaded():
+    from app.core.graph_engine import validate_graph
+
+    nodes = [{"id": "s", "type": "Start", "data": {"params": {}}},
+             {"id": "f", "type": "project:FocalLoss", "data": {"params": {}}},
+             {"id": "u", "type": "NoSuchThing", "data": {"params": {}}}]
+    errors = validate_graph(nodes, [])
+    focal = next(e for e in errors if "project:FocalLoss" in e)
+    assert "mods/ folder, which is not loaded" in focal
+    assert "cdui project mods --trust" in focal
+    assert focal.params.get("reason") == "mods_not_loaded"
+    other = next(e for e in errors if "NoSuchThing" in e)
+    assert "mods/" not in other and "reason" not in other.params

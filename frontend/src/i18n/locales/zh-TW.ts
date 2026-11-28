@@ -764,6 +764,7 @@ const zhTW: Record<TranslationKey, string> = {
   'graphValidation.param_above_max': '「{node}」的「{param}」是 {value}，大於最大值 {max}',
   'graphValidation.param_not_an_option': '「{node}」的「{param}」是 {value}，不在可選項目中（{options}）',
   'graphValidation.unknown_node_type': '「{node}」的節點類型「{type}」未安裝',
+  'graphValidation.unknown_node_type.modsNotLoaded': '「{node}」的「{type}」來自這個專案的 mods/，目前沒有載入。請從專案選單檢視 mods/ 來載入。',
   'graphValidation.unknown_preset': '「{node}」使用的預設組合「{preset}」不存在',
   'graphValidation.invalid_output_port': '「{node}」沒有輸出「{port}」',
   'graphValidation.invalid_input_port': '「{node}」沒有輸入「{port}」',

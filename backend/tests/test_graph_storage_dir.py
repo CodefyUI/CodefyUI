@@ -525,7 +525,7 @@ def test_requires_lists_plugin_and_custom_types_without_versions():
     out = gs.derive_requires(graph, None, providers.get)
     assert out == {"codefyui": gs.REQUIRES_CODEFYUI,
                    "plugins": {"pk": {"nodes": ["pk:Embed"]}},
-                   "mods": {"nodes": ["MyNode"]}}
+                   "custom": {"nodes": ["MyNode"]}}
 
 
 def test_a_type_this_machine_lacks_keeps_its_old_requirement():
@@ -535,10 +535,25 @@ def test_a_type_this_machine_lacks_keeps_its_old_requirement():
                        {"id": "c", "type": "Unknown"}]}
     out = gs.derive_requires(graph, previous, lambda t: None)
     assert out["plugins"] == {"gone": {"nodes": ["gone:X"]}}
-    assert out["mods"] == {"nodes": ["OldMod"]}
+    # An index from before 4C listed custom nodes under mods: still read,
+    # and written back where custom nodes go now.
+    assert out["custom"] == {"nodes": ["OldMod"]}
+    assert "mods" not in out
     # A type no longer in the graph is not carried along.
     assert gs.derive_requires({"nodes": []}, previous, lambda t: None) == {
         "codefyui": gs.REQUIRES_CODEFYUI}
+
+
+def test_project_types_are_mods_whether_or_not_they_are_loaded():
+    providers = {"Focal": "custom", "project:Focal": "project"}
+    graph = {"nodes": [{"id": "a", "type": "project:Focal"}, {"id": "b", "type": "Focal"},
+                       {"id": "c", "type": "project:NotLoaded"}]}
+    out = gs.derive_requires(graph, None, providers.get)
+    assert out["mods"] == {"nodes": ["project:Focal", "project:NotLoaded"]}
+    assert out["custom"] == {"nodes": ["Focal"]}
+    # A new-style index reads back the same.
+    again = gs.derive_requires(graph, out, lambda t: None)
+    assert again == out
 
 
 def test_a_saved_folder_records_requires(project):
