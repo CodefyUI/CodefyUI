@@ -146,6 +146,12 @@ files ARE the storage. Open it with:
     assets/output/          ImageWriter output (created on demand)
     .env.example            committed template of required secret keys
     .env                    your secrets (gitignored, never committed)
+    mods/nodes/             this project's own nodes (optional), named project:<NODE_NAME>
+    mods/presets/           this project's own preset cards (optional)
+
+Python in `mods/` runs only after whoever opens the project agrees to it
+(CodefyUI asks, listing every file); `cdui project mods .` shows what it would
+ask about.
 
 ## Quickstart
 

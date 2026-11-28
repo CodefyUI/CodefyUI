@@ -349,7 +349,9 @@ Source Control 有 git 操作進行中；另一個切換正在進行；或有已
 
 ### 專案的 `.env` {/* #the-projects-env */}
 
-這個安裝自己建立的專案（預設專案、**新增專案**、匯入）以及用 `--project` 指定的專案，照舊載入 `.env`。
+這個安裝自己建立的專案（預設專案、**新增專案**、匯入）以及用 `--project` 指定的專案，照舊載入 `.env`；
+但任何專案的 `.env` 都不能設定 `PYTHON*`、`LD_*` 或 `DYLD_*`：它們決定伺服器的子程序執行哪些程式碼，所以會略過，
+並在伺服器記錄中列出名稱。真的需要的話，請在啟動 `cdui start` 前自己在 shell 裡 export。
 其他你開啟的資料夾和 clone 下來的專案，編輯器會先列出變數**名稱**（從不顯示值）並詢問。答案會依檔案內容記在 `<user data>/trust.json`；
 檔案改了就會再問一次。拒絕時專案照常開啟，只是沒有那些變數。
 
@@ -368,6 +370,73 @@ Source Control 有 git 操作進行中；另一個切換正在進行；或有已
 另外有些函式庫只在啟動時讀一次設定（`CUDA_VISIBLE_DEVICES`、`HF_HOME` 與其他 `HF_*`、
 `TORCH_HOME`、`OMP_NUM_THREADS` 等）：切換後編輯器會說明哪些要重新啟動伺服器才會生效。
 
+## 專案 mods {/* #project-mods */}
+
+專案可以在 `mods/` 裡帶著自己的節點，和圖檔放在一起：
+
+```
+mods/
+  nodes/
+    focal_loss.py      # BaseNode 子類別，一個檔案可放多個
+    _helpers.py        # 給節點檔匯入用：from ._helpers import ...
+  presets/
+    strong_aug.json    # 預設組合卡片，格式同匯出的預設組合
+```
+
+`mods/nodes/` 裡的節點在節點面板和存下的圖裡一律叫做 `project:<NODE_NAME>`（例如 `project:FocalLoss`）。
+沒有前綴的名稱永遠不會指到專案節點：專案裡叫 `Conv2d` 的節點是 `project:Conv2d`，圖裡寫 `Conv2d` 的仍是內建的那個。
+節點面板會標出每個節點的來源：這個專案的 `mods/`、安裝在這台電腦上的自訂節點，或外掛。
+
+### 信任 {/* #project-mods-trust */}
+
+這些檔案是 Python。信任它們，就會以你的權限在這個 CodefyUI 伺服器中執行它們。掃描結果只是提示，不是沙箱。
+
+在你同意之前，`mods/` 裡的東西都不會執行。從資料夾開啟或 clone 下來的專案會先詢問：提示會列出每個檔案的大小、行數、
+外掛閘門的掃描結果、它定義的節點名稱（從原始碼讀出，列出時不匯入任何東西），以及上次同意後改過的是哪些檔。
+你的答案會依那些位元組（每個檔案和它的可執行位元）記在 `<user data>/trust.json`；任何變更都會在下次載入時
+（重新載入節點、切換專案、重新啟動）再問一次。
+
+- **信任並載入** 會執行這些檔案。掃描有發現的檔案不會載入，除非你勾選 **完全信任這些檔案**。
+- **暫時不要** 會開啟專案但不載入 mods。同一個瀏覽器工作階段內，同樣的檔案不會再問；專案選單的 **檢視 mods/**、
+  圖上的橫幅，以及節點上的 **未載入** 標記都能再打開提示。
+- 用到未載入專案節點的圖仍可開啟，存檔時這些節點會原樣保留（類型、參數、連線）。執行、驗證和發布會拒絕並說明原因。
+
+這個安裝自己建立的專案（預設專案、**新增專案**、匯入），只要 git 的 `HEAD` 還停在上次載入 mods 時的位置就不會詢問：
+你自己的修改會直接載入。`HEAD` 移動且 `mods/` 跟著改變時（pull、checkout），就和其他專案一樣會詢問。
+
+`mods/` 裡有些東西永遠不會載入；只要有任何一個，`mods/` 整個都不載入，提示會列出它們：符號連結（或 `mods` 本身就是連結）、
+不是一般檔案的東西、編譯過的檔案（`.pyc`、`.so`、`.pyd` 等）、`__pycache__` 資料夾，以及 `nodes/` 底下是套件
+（有 `__init__.py`）的資料夾。只有直接放在 `mods/nodes/` 的檔案才是節點檔；每個檔案只讀一次、比對你同意過的內容，
+並照讀到的內容執行。兩個檔案定義同一個 `NODE_NAME` 時兩者都不載入。內部節點沒有載入、或名稱和內建預設組合重複的預設組合會略過並列出。
+
+切換到其他專案會卸載它的節點與預設組合，但卸載不等於隔離：執行過的程式碼可能留下東西。另一個專案的 mods 在這個伺服器中執行過之後，
+專案 chip 會顯示 **建議重新啟動**；要完全移除，請重新啟動伺服器。
+
+用到 `project:` 節點的圖只能在 **This server** 上執行：送到 worker 或 `any` 的執行會在開始前被拒絕，
+因為 worker 沒有這個專案的 mods（也沒有你同意執行它們）。
+
+### 在命令列 {/* #project-mods-cli */}
+
+```bash
+cdui project mods .                 # 掃描結果與 sha256，不執行任何東西
+cdui project mods . --trust         # 同上，然後詢問
+cdui project mods . --trust --yes   # 不詢問直接記錄（CI 用）
+cdui project mods . --write         # 改寫 manifest 的 [mods]
+```
+
+`--yes` 就是同意執行這些程式碼，和在提示裡按同意一樣。`--full`（搭配 `--trust`）也會執行掃描有發現的檔案。
+`cdui project validate` 只在信任紀錄和檔案完全相符時載入專案的 mods，否則會說明用到 `project:` 節點的圖會失敗與原因。
+伺服器以外不會替擁有者自動信任任何東西。
+
+manifest 的 `[mods]` 區塊列出每個檔案的 sha256 以及它定義的節點或預設組合，讓 review 看得出哪個 mod 改了。
+它由 `cdui project freeze` 與 `cdui project mods --write` 寫入（存檔時不會改），就地修改並保留你的註解；
+`cdui project validate` 在它和 `mods/` 不符時警告。它永遠不用來判斷信任：儲存庫不能替自己擔保。
+
+`cdui project freeze --used-only` 只釘選專案裡的圖用到的外掛。存成資料夾的圖在 `index.json` 列出它需要的東西：
+`requires.plugins`、`requires.mods`（它的 `project:` 節點）與 `requires.custom`（安裝在作者電腦上的自訂節點）。
+
+`cdui project restore` 安裝 lockfile 裡沒有的釘選前，會先顯示來源、它要求匯入的模組與要求的能力，並詢問；在腳本裡請加 `--yes`。
+
 ## 遷移既有的扁平 graphs 目錄 {/* #migrating-an-existing-flat-graphs-dir */}
 
 如果你用的是舊的「[版本控管你的 graphs](/usage/version-control-graphs)」做法
@@ -383,7 +452,7 @@ cdui project init my-service --adopt /path/to/old-graphs
 
 - 一台伺服器同時只開一個專案；用專案 chip 切換（見上方）。
 - `DB_PATH`、custom nodes 與[匯出的預設組合](/advanced/presets#creating-your-own)仍由整個安裝共用；
-  [plugins](/advanced/plugins) 才是可攜的機制（在 manifest 中以 SHA 釘選）。
+  [plugins](/advanced/plugins) 才是可攜的機制（在 manifest 中以 SHA 釘選），專案自己的節點則放在 [`mods/`](#project-mods)。
 - `assets/data/` 是相對的 `Dataset` 或 `FileReader` 路徑所解析到的位置。
   `CSVReader`、`DocumentLoader` 與 `TextCorpusDataset` 則會把輸入的相對路徑
   解析到專案根目錄，所以請寫 `assets/data/table.csv`，而不是 `table.csv`；

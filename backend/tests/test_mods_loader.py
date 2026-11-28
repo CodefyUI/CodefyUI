@@ -371,3 +371,42 @@ def test_validate_explains_a_project_type_that_is_not_loaded():
     assert focal.params.get("reason") == "mods_not_loaded"
     other = next(e for e in errors if "NoSuchThing" in e)
     assert "mods/" not in other and "reason" not in other.params
+
+
+async def test_a_declined_project_node_survives_save_then_trust(http, isolated):  # noqa: F811
+    """The required round trip on the server side: decline, open the
+    graph, edit something else, save (as a folder graph), trust -- the
+    project node comes back with its type, label, params and wires."""
+    p = _project(isolated / "ext" / "clone", {"nodes/loss.py": _node("FocalLoss")})
+    # A scaffolded project stores new graphs as folders ([storage] dir).
+    assert (await http.post("/api/projects/open", json={"path": str(p)})).status_code == 200
+    assert registry.get("project:FocalLoss") is None     # declined: not loaded
+    graph = {
+        "name": "uses", "description": "",
+        "nodes": [
+            {"id": "s", "type": "Start", "position": {"x": 0, "y": 0}, "data": {"params": {}}},
+            {"id": "f", "type": "project:FocalLoss", "position": {"x": 200, "y": 0},
+             "data": {"label": "My focal", "params": {"gamma": 3.5, "alpha": 0.25}}},
+            {"id": "p", "type": "Print", "position": {"x": 400, "y": 0},
+             "data": {"params": {"label": "edited"}}},
+        ],
+        "edges": [{"id": "e1", "source": "f", "sourceHandle": "loss",
+                   "target": "p", "targetHandle": "value"}],
+        "presets": [], "segmentGroups": [],
+    }
+    resp = await http.post("/api/graph/save", json={**graph, "file": "uses"})
+    assert resp.status_code == 200, resp.text
+    assert (p / "graphs" / "uses").is_dir()
+    index = json.loads((p / "graphs" / "uses" / "index.json").read_text(encoding="utf-8"))
+    assert index["requires"]["mods"] == {"nodes": ["project:FocalLoss"]}
+
+    seen = (await http.get("/api/projects/mods")).json()
+    assert (await http.post("/api/projects/trust-mods",
+                            json={"sha256": seen["digest"]})).status_code == 200
+    loaded = (await http.get("/api/graph/load/uses")).json()
+    focal = next(n for n in loaded["nodes"] if n["id"] == "f")
+    assert focal["type"] == "project:FocalLoss"
+    assert focal["data"]["label"] == "My focal"
+    assert focal["data"]["params"] == {"gamma": 3.5, "alpha": 0.25}
+    assert [(e["source"], e.get("sourceHandle"), e["target"], e.get("targetHandle"))
+            for e in loaded["edges"]] == [("f", "loss", "p", "value")]

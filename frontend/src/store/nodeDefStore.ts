@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { NodeDefinition, PresetDefinition } from '../types';
 import { fetchNodeDefinitions, fetchPresetDefinitions, reloadNodes } from '../api/rest';
+import { useProjectStore } from './projectStore';
 
 interface NodeDefState {
   definitions: NodeDefinition[];
@@ -43,6 +44,12 @@ export const useNodeDefStore = create<NodeDefState>((set, get) => ({
   reload: async () => {
     await reloadNodes();
     await get().fetchDefinitions();
+    // A reload runs the project's mods/ through the trust gate again: a
+    // tree that changed since it was trusted is unloaded and needs consent,
+    // which the project notice asks for once the overview says so.
+    if (useProjectStore.getState().projectDir !== null) {
+      await useProjectStore.getState().loadOverview();
+    }
   },
 }));
 

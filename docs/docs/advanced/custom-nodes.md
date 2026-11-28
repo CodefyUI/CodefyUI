@@ -8,6 +8,8 @@ description: Add new node behavior by dropping a Python file into custom_nodes/ 
 
 CodefyUI is **backend-authoritative**: a node's ports, parameters, and category all come from its Python definition, and the UI renders it automatically. To add new behavior, drop a `.py` file into `backend/app/custom_nodes/` that extends `BaseNode`. To keep custom nodes outside the installation, set `CODEFYUI_CUSTOM_NODES_DIR` to another directory before starting the server. That directory replaces `backend/app/custom_nodes/` rather than adding to it, and it applies to every project the installation opens. Files in it import each other relatively (`from .helpers import x`): `from app.custom_nodes.helpers import x` looks in `backend/app/custom_nodes/` instead.
 
+A node that belongs to one project, and should travel with it in git, goes in that project's [`mods/nodes/`](/usage/project-directories#project-mods) instead: it is written the same way, named `project:<NODE_NAME>`, and runs only after whoever opens the project agrees to it.
+
 :::tip For a few lines of code, try the canvas first
 If what you need is a short transform or a statistic over what a graph already produced, the [PythonScript node](./python-script-node.md) runs Python you type straight onto the canvas -- no file, no restart. Come back here when the code outgrows it, or when it needs files, the network, or a dependency outside the script allowlist.
 :::
