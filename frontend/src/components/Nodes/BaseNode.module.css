@@ -116,7 +116,8 @@
 .header {
   /* Dynamic: background set via inline style — a tint of the category hue
      mixed into --surface-raised (see BaseNode.tsx), not the raw hue. */
-  padding: var(--sp-3) var(--sp-4);
+  /* 4px above and below, not 8 (phase 5). */
+  padding: var(--sp-2) var(--sp-4);
   /* card radius (--radius-lg) minus the 1px card border, so the header's
      top corners nest flush inside it. */
   border-radius: calc(var(--radius-lg) - 1px) calc(var(--radius-lg) - 1px) 0 0;
@@ -158,19 +159,21 @@
 
 /* ── Ports area ── */
 .portsArea {
-  padding-top: var(--sp-3);
-  padding-bottom: var(--sp-3);
+  padding-top: var(--sp-2);
+  padding-bottom: var(--sp-2);
 }
 
 /* ── Port row ── */
 /* The vertical padding is sized by the dot, not by the label: at
    --handle-size 20px a 4px pad left only 4px of clear space between one
    port's dot and the next one's, which is exactly the miss-the-target
-   problem the bigger dot was meant to fix. 8px puts the row pitch at ~32px,
-   i.e. a 12px gap between dots and room for the --handle-hit ring. */
+   problem the bigger dot was meant to fix. 8px put the row pitch at ~32px;
+   phase 5 took it to --sp-port-row (6px): a ~28px pitch, 11px between the
+   17px dots and 8px between their 20px press rings. 4px would leave the
+   rings 3-4px apart. */
 .portRowInput {
   position: relative;
-  padding: var(--sp-3) var(--sp-4) var(--sp-3) var(--sp-5);
+  padding: var(--sp-port-row) var(--sp-4) var(--sp-port-row) var(--sp-5);
   display: flex;
   align-items: center;
   gap: var(--sp-3);
@@ -178,7 +181,7 @@
 
 .portRowOutput {
   position: relative;
-  padding: var(--sp-3) var(--sp-5) var(--sp-3) var(--sp-4);
+  padding: var(--sp-port-row) var(--sp-5) var(--sp-port-row) var(--sp-4);
   display: flex;
   align-items: center;
   justify-content: flex-end;
