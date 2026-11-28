@@ -29,8 +29,8 @@ const PLUGINS = join(REPO, 'plugins');
 /** One line, this wide -- the Chinese half of the rule
  * `backend/tests/test_example_descriptions.py` holds over the English. Forty
  * columns is twenty Chinese characters, which is what the line under the
- * title has room for in a 13rem card whose type grows to 19px on a wide
- * screen. `CARD_DESC_COLUMNS` in EmptyCanvasOverlay.tsx cuts at the same 40,
+ * title has room for in a rem-sized card, whose type grows with the root
+ * font size. `CARD_DESC_COLUMNS` in EmptyCanvasOverlay.tsx cuts at the same 40,
  * so a description that obeys this cap is never cut on screen and the card
  * shows the line whole. The long explanation belongs in a note on the canvas,
  * beside the nodes it is about, not in the one field every card and every row

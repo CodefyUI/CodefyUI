@@ -200,6 +200,10 @@
   --h-control: 32px; /* default compact control */
   --h-control-lg: 40px; /* primary actions, menu rows, dialog buttons */
   --h-row: 36px; /* list row in the node palette */
+  /* Phase 5 (density). */
+  --h-toolbar: 44px; /* the graph toolbar: 28px controls, 8px above and below */
+  --h-row-compact: 28px; /* a name-only list row (palette "names only") */
+  --h-row-section: 30px; /* a collapsible category header in a list */
 
   /* Graph connection handles. The dots are the smallest thing on the canvas
      that has to be hit with a mouse, and teachers reported missing them.
@@ -216,11 +220,17 @@
      --handle-hit is a transparent press target drawn around every handle
      (App.css, .react-flow__handle::before) so the target can outgrow the dot.
      20px keeps it inside the dot's own former footprint, i.e. clear of the
-     port label; the port row pitch (~32px, see .portRowInput) is the hard
+     port label; the port row pitch (~28px, see --sp-port-row) is the hard
      ceiling, past which neighbouring ports steal each other's presses. */
   --handle-size: 17px; /* port dot, 13px of it visible */
   --handle-size-trigger: 13px; /* Start / trigger diamond */
   --handle-hit: 20px;
+  /* Vertical padding of one port row on a node card (BaseNode.module.css).
+     With a 17-18px label line it gives a ~28px row pitch: 11px between
+     neighbouring dots and 8px between their 20px press targets. --sp-2 (4px)
+     would put the targets 3-4px apart, which is where presses land on the
+     wrong port. */
+  --sp-port-row: 6px;
   /* The Start diamond's press target (StartNode.module.css). The diamond has
      no neighbouring handle to steal presses from, so the port-row ceiling
      above does not apply. */

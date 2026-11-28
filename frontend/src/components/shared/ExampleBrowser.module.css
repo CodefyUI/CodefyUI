@@ -62,7 +62,7 @@
   padding: var(--sp-4) var(--sp-5);
   cursor: pointer;
   /* rem, not a literal 200px: the root font-size is
-     clamp(16px, 0.35vw + 11px, 19px) (App.css), so on a wide screen the name
+     clamp(16px, 0.1vw + 14.5px, 16.5px) (App.css), so on a wide screen the name
      and the description inside this card are at their largest while a px
      width is not — the card shrinks against its own type. 13rem is 208px at
      a 16px root and tracks the type from there, and matches the gallery

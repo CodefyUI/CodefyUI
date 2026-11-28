@@ -528,3 +528,26 @@ describe('getTokenColor', () => {
     expect(getTokenColor(TOKEN_COLORS.length + 5)).toBe(TOKEN_COLORS[5]);
   });
 });
+
+describe('density tokens (phase 5)', () => {
+  const px = (name: string): number => {
+    const value = cssVar(name);
+    expect(value).toMatch(/^\d+px$/);
+    return parseFloat(value);
+  };
+
+  it('keeps the toolbar row a control plus 8px above and below', () => {
+    expect(px('--h-toolbar')).toBe(px('--h-control-sm') + 2 * 8);
+  });
+
+  it('keeps list rows at or above the 24px target floor', () => {
+    expect(px('--h-row-compact')).toBeGreaterThanOrEqual(24);
+    expect(px('--h-row-section')).toBeGreaterThanOrEqual(24);
+  });
+
+  it('leaves at least 8px between neighbouring port press targets', () => {
+    // Row pitch = label line (~17.5px at the 16px root) + padding above and below.
+    const pitch = 17.5 + 2 * px('--sp-port-row');
+    expect(pitch - px('--handle-hit')).toBeGreaterThanOrEqual(8);
+  });
+});

@@ -182,7 +182,7 @@
 .cards {
   display: grid;
   /* The track is sized in rem so the card scales with the type it holds. The
-     root font-size is clamp(16px, 0.35vw + 11px, 19px) (App.css), so on a
+     root font-size is clamp(16px, 0.1vw + 14.5px, 16.5px) (App.css), so on a
      2560px window every label in the card is at its largest while a card
      pinned at a literal 200px is not — which is how all 38 gallery titles
      came to be ellipsized at once. 13rem is 208px at a 16px root and grows
