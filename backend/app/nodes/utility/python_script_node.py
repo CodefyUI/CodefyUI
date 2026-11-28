@@ -72,6 +72,7 @@ from ...core.node_base import (
     PortDefinition,
     resolve_count_param,
 )
+from ...core.plugin_validator import PluginValidationError
 from ...core.script_policy import (
     ESCAPE_HATCH_HINT,
     SCRIPT_FILENAME,
@@ -495,9 +496,14 @@ class PythonScriptNode(BaseNode):
                 name="code",
                 param_type=ParamType.CODE,
                 default=DEFAULT_CODE,
+                # Computed from the policy, so it cannot drift from the gate.
                 description=(
-                    "Python source defining run(inputs, params). Checked "
-                    "against the Tier-0 policy on every edit."
+                    "Python source defining run(inputs, params). It may import "
+                    "only " + ", ".join(TIER0_MODULES) + " (the Tier-0 policy, "
+                    "checked on every edit and by validate); anything else, "
+                    "such as sklearn or pandas, is refused. Load data with the "
+                    "catalog's reader nodes (CSVReader and the bundled "
+                    "data/samples/ files) rather than in the script."
                 ),
             ),
             ParamDefinition(
@@ -537,6 +543,26 @@ class PythonScriptNode(BaseNode):
                 ),
             ),
         ]
+
+    # ── Validation ───────────────────────────────────────────────────────
+
+    @classmethod
+    def static_issues(cls, params: dict[str, Any]) -> list[dict[str, Any]]:
+        """The run's own gate (``validate_script_source``), run at validate
+        time, so a blocked import is a validation error with its line and
+        the modules a script may use rather than a failure mid-run."""
+        code = str(params.get("code") or "")
+        try:
+            validate_script_source(code)
+        except PluginValidationError as exc:
+            allowed = ", ".join(TIER0_MODULES)
+            where = f"line {exc.lineno}: " if exc.lineno else ""
+            message = str(exc)
+            if allowed not in message:
+                message += f" (in-canvas scripts may import only: {allowed})"
+            return [{"code": "script_policy", "message": f"{where}{message}",
+                     "line": exc.lineno, "allowed_modules": list(TIER0_MODULES)}]
+        return []
 
     # ── Execution ────────────────────────────────────────────────────────
 

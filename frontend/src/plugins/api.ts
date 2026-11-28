@@ -25,6 +25,7 @@ import { layoutAllTargetIds, layoutFitBounds, layoutTargetsChanged } from '../ut
 import { resolveUnboundDocument } from '../utils/openExample';
 import { subgraphViewPath } from '../utils/subgraph';
 import { MAX_WORKSPACE_GRAPH_BYTES, MAX_WORKSPACE_TABS } from '../utils/workspaceLimits';
+import { definitionsWithDynamicPorts } from '../utils/livePorts';
 import { applyGraphOps, type ApplyOutcome, type GraphOp, type OpResult } from './ops';
 import { registerNodeRenderer, type PluginNodeRenderer } from './nodeRenderers';
 import {
@@ -795,6 +796,18 @@ function warnIfUnknownNodeType(pluginId: string, nodeType: string): void {
   );
 }
 
+/** Whether *url* names this page's own `/api/agent/...`. */
+export function isOwnAgentRoute(url: unknown): boolean {
+  const raw = typeof Request !== 'undefined' && url instanceof Request ? url.url : String(url);
+  try {
+    const resolved = new URL(raw, document.baseURI);
+    return resolved.origin === window.location.origin
+      && resolved.pathname.startsWith('/api/agent/');
+  } catch {
+    return false;
+  }
+}
+
 export function buildPluginAPI(
   pluginId: string,
   getWidgetContainer: (id: string) => HTMLElement,
@@ -837,7 +850,7 @@ export function buildPluginAPI(
     },
     graph: {
       getGraph: () => useTabStore.getState().getSerializedGraph(),
-      getNodeDefinitions: () => useNodeDefStore.getState().definitions,
+      getNodeDefinitions: () => definitionsWithDynamicPorts(useNodeDefStore.getState().definitions),
       applyOperations: (ops) => commitGraphOperations(ops, pluginId),
       onGraphChanged: (cb) => {
         // Track the unsubscribe so the host can tear it down on a dev
@@ -904,7 +917,10 @@ export function buildPluginAPI(
       metrics: (id, name) => getRunMetrics(id, name),
     },
     http: {
-      fetch: (url, init) => apiFetch(url, init),
+      // A GET to this server's /api/agent/ (project files, data files) carries
+      // the session token too: those reads take it at route level, and the
+      // token only goes to this page's own origin (round 6 H5).
+      fetch: (url, init) => apiFetch(url, init, { authenticate: isOwnAgentRoute(url) }),
     },
     storage: {
       get: (key) => window.localStorage.getItem(ns(key)),

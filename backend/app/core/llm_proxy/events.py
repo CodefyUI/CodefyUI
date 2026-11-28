@@ -20,6 +20,18 @@ def text_delta(text: str) -> dict[str, Any]:
     return {"type": "text_delta", "text": text}
 
 
+def reasoning_delta(text: str) -> dict[str, Any]:
+    """A piece of the model's reasoning, as the upstream streamed it.
+
+    Relayed so a client can show that the model is working during a long
+    think (a local reasoning model was silent for two minutes before its
+    first word). Never part of ``done``'s content. Clients that do not know
+    the event ignore it; ``/api/llm/models`` advertises it as
+    ``capabilities.reasoning_stream``.
+    """
+    return {"type": "reasoning_delta", "text": text}
+
+
 def error_event(message: str) -> dict[str, Any]:
     return {"type": "error", "message": message}
 

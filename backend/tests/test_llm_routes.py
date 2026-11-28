@@ -101,6 +101,7 @@ def test_models_openai(client, monkeypatch):
     assert r.json()["capabilities"] == {
         "reasoning_effort": True,
         "rich_model_catalog": False,
+        "reasoning_stream": True,
     }
 
 
@@ -118,6 +119,7 @@ def test_models_codex_fallback_is_rich_and_backward_compatible(client):
     assert body["capabilities"] == {
         "reasoning_effort": True,
         "rich_model_catalog": True,
+        "reasoning_stream": True,
     }
 
 
@@ -137,6 +139,7 @@ def test_models_non_forwarding_provider_capabilities_are_false(
     assert r.json()["capabilities"] == {
         "reasoning_effort": False,
         "rich_model_catalog": False,
+        "reasoning_stream": True,
     }
 
 

@@ -158,7 +158,7 @@ class CSVReaderNode(BaseNode):
         path that escapes the project directory, exactly as execute() does.
         """
         from ...config import settings
-        from ...core.data_paths import working_dir_file
+        from ...core.data_paths import resolve_bundled_sample, working_dir_file
 
         path = Path(path_str)
         # A bare filename is what the DATA_FILE upload dropdown produces —
@@ -175,11 +175,11 @@ class CSVReaderNode(BaseNode):
             candidate = settings.DATA_FILES_DIR / path.name
             if candidate.is_file():
                 return candidate
+        # ``data/samples/...`` names a bundled sample: the project's copy
+        # when it has one, else the install's (core.data_paths, round 6 H0).
+        if (sample := resolve_bundled_sample(path_str)) is not None:
+            return sample
         if settings.PROJECT_DIR is not None and not path.is_absolute():
-            # The bundled sample is special-cased to the install (cwd stays
-            # backend/ even in project mode) so demos keep working (spec 7.2).
-            if path_str.replace("\\", "/") == "data/samples/iris.csv":
-                return path.resolve()
             proj = settings.PROJECT_DIR.resolve()
             resolved = (proj / path).resolve()
             if not resolved.is_relative_to(proj):
@@ -238,9 +238,11 @@ class CSVReaderNode(BaseNode):
                 default="",
                 description=(
                     "CSV file to read. Pick one you uploaded from the dropdown, "
-                    "or type a path (absolute, or relative to the backend "
-                    "working dir; in project mode, relative paths resolve "
-                    "inside the project directory)."
+                    "or type a path: a bundled sample as data/samples/<name> "
+                    "(data/samples/iris.csv, data/samples/digits.csv), which "
+                    "works in every mode, or a path relative to the project "
+                    "(project mode) or the backend working dir, or an "
+                    "absolute path."
                 ),
             ),
             ParamDefinition(
@@ -303,7 +305,9 @@ class CSVReaderNode(BaseNode):
             )
         path = self._resolve_path(path_str)
         if not path.exists():
-            raise FileNotFoundError(f"CSVReader: file not found at {path}")
+            from ...core.data_paths import not_found_message
+
+            raise FileNotFoundError(not_found_message("CSVReader", path_str, path))
 
         skip_header = bool(params.get("skip_header", True))
         df = pd.read_csv(path) if skip_header else pd.read_csv(path, header=None)

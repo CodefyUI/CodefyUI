@@ -8,8 +8,15 @@ from typing import Any
 
 import httpx
 
-from ._common import TIMEOUT, content_to_anthropic_blocks, content_to_text, parse_tool_args
-from .events import done_event, error_event, text_delta
+from ._common import (
+    content_to_anthropic_blocks,
+    content_to_text,
+    parse_tool_args,
+    should_retry,
+    timeout_for,
+    upstream_failure,
+)
+from .events import done_event, error_event, reasoning_delta, text_delta
 from .schema import ChatRequest, ToolCall
 
 _BASE = "https://api.anthropic.com/v1"
@@ -75,54 +82,64 @@ async def stream_chat(
     stop_reason: str | None = None
     usage: dict[str, int] = {}
 
-    try:
-        async with client.stream("POST", f"{_BASE}/messages", json=build_payload(req),
-                                 headers=headers, timeout=TIMEOUT) as resp:
-            if resp.status_code != 200:
-                body = (await resp.aread()).decode("utf-8", "replace")[:500]
-                yield error_event(f"upstream {resp.status_code}: {body}")
-                return
-            async for line in resp.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                try:
-                    ev = json.loads(line[len("data: "):])
-                except json.JSONDecodeError:
-                    continue
-                etype = ev.get("type")
-                if etype == "message_start":
-                    u = (ev.get("message") or {}).get("usage") or {}
-                    if "input_tokens" in u:
-                        usage["input_tokens"] = int(u["input_tokens"])
-                elif etype == "content_block_start":
-                    block = ev.get("content_block") or {}
-                    if block.get("type") == "tool_use":
-                        blocks[int(ev.get("index", 0))] = {
-                            "id": block.get("id", ""),
-                            "name": block.get("name", ""),
-                            "partial_json": "",
-                        }
-                elif etype == "content_block_delta":
-                    delta = ev.get("delta") or {}
-                    if delta.get("type") == "text_delta" and delta.get("text"):
-                        content_parts.append(delta["text"])
-                        yield text_delta(delta["text"])
-                    elif delta.get("type") == "input_json_delta":
-                        idx = int(ev.get("index", 0))
-                        if idx in blocks:
-                            blocks[idx]["partial_json"] += delta.get("partial_json", "")
-                elif etype == "message_delta":
-                    d = ev.get("delta") or {}
-                    if d.get("stop_reason"):
-                        stop_reason = d["stop_reason"]
-                    u = ev.get("usage") or {}
-                    if "output_tokens" in u:
-                        usage["output_tokens"] = int(u["output_tokens"])
-                elif etype == "message_stop":
-                    break
-    except httpx.HTTPError as exc:
-        yield error_event(f"upstream request failed: {exc}")
-        return
+    attempt = 0
+    while True:
+        received = False
+        try:
+            async with client.stream("POST", f"{_BASE}/messages", json=build_payload(req),
+                                     headers=headers, timeout=timeout_for(req.provider)) as resp:
+                received = True
+                if resp.status_code != 200:
+                    body = (await resp.aread()).decode("utf-8", "replace")[:500]
+                    yield error_event(f"upstream {resp.status_code}: {body}")
+                    return
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    try:
+                        ev = json.loads(line[len("data: "):])
+                    except json.JSONDecodeError:
+                        continue
+                    etype = ev.get("type")
+                    if etype == "message_start":
+                        u = (ev.get("message") or {}).get("usage") or {}
+                        if "input_tokens" in u:
+                            usage["input_tokens"] = int(u["input_tokens"])
+                    elif etype == "content_block_start":
+                        block = ev.get("content_block") or {}
+                        if block.get("type") == "tool_use":
+                            blocks[int(ev.get("index", 0))] = {
+                                "id": block.get("id", ""),
+                                "name": block.get("name", ""),
+                                "partial_json": "",
+                            }
+                    elif etype == "content_block_delta":
+                        delta = ev.get("delta") or {}
+                        if delta.get("type") == "thinking_delta" and delta.get("thinking"):
+                            yield reasoning_delta(delta["thinking"])
+                        elif delta.get("type") == "text_delta" and delta.get("text"):
+                            content_parts.append(delta["text"])
+                            yield text_delta(delta["text"])
+                        elif delta.get("type") == "input_json_delta":
+                            idx = int(ev.get("index", 0))
+                            if idx in blocks:
+                                blocks[idx]["partial_json"] += delta.get("partial_json", "")
+                    elif etype == "message_delta":
+                        d = ev.get("delta") or {}
+                        if d.get("stop_reason"):
+                            stop_reason = d["stop_reason"]
+                        u = ev.get("usage") or {}
+                        if "output_tokens" in u:
+                            usage["output_tokens"] = int(u["output_tokens"])
+                    elif etype == "message_stop":
+                        break
+            break
+        except httpx.HTTPError as exc:
+            if should_retry(exc, received=received, attempt=attempt):
+                attempt += 1
+                continue
+            yield error_event(upstream_failure(exc, req.provider, req.model))
+            return
 
     tool_calls = [
         ToolCall(id=b["id"] or f"toolu_{i}", name=b["name"],

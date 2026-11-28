@@ -22,6 +22,22 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Added
+
+- **Project files and data files for agents.** `GET /api/agent/files` lists a project folder or reads a text file (64 KB, with the whole file's sha256), and `PUT /api/agent/files` writes one text file with compare-and-swap on that hash. Reads refuse `.git/`, dotenv files, other hidden paths and secret-shaped names (`*.pem`, `id_rsa*`, `credentials*` ...). Writes are limited to `mods/nodes/*.py`, `mods/presets/*.json`, text files under `docs/`, `notes/`, `data/` and `assets/data/` with listed extensions (not `data/samples/`), and `.md` at the project root. Links are never followed. A file written into `mods/` always goes through the mods trust prompt before it loads, even in a project you own whose HEAD has not moved. `GET /api/agent/data-files` lists the bundled samples, the project's data files and the uploads as a node parameter spells them, with CSV columns. All three need the session token, GETs included; `api.http.fetch` sends it for same-origin `/api/agent/` requests. `GET /api/agent/context` adds `git`, `graph_format` and `mods` to `project`.
+
+### Changed
+
+- **The LLM proxy relays reasoning and says why a request failed.** Reasoning the upstream streams (OpenAI-compatible `delta.reasoning`/`reasoning_content`, Codex reasoning events, Anthropic thinking deltas) is sent as `{"type": "reasoning_delta", "text": ...}` and never added to the answer; `/api/llm/models` advertises it as `capabilities.reasoning_stream`. A failed request names the exception class and what happened ("ReadTimeout: the endpoint sent no data for 600 seconds", "ConnectError: cannot reach 127.0.0.1:11434") instead of an empty message, and the server log gets one line with the class, provider and model. The read timeout is 600 seconds for Custom endpoints and 120 for the others; `CODEFYUI_LLM_READ_TIMEOUT` sets it for all. A transport error before any byte of the response arrived is retried once; a timeout or an error after data arrived is not.
+
+### Fixed
+
+- **Validate reports a PythonScript import the run would refuse.** `/api/graph/validate` used to answer valid for a script importing `sklearn.datasets`, and the Tier-0 policy refused it only when the graph ran. Validate now runs the same gate and reports a `script_policy` error naming the node, the line and the modules a script may import. The script's `code` parameter lists those modules, and the path parameters of `CSVReader`, `DocumentLoader` and `TextCorpusDataset` say how to name a bundled sample.
+
+- **Plugins can wire the ports a node's params create.** `applyOperations` checked a `connect` against a node's default ports, so after `add_node PythonScript {output_ports: 2}` a wire from `out2` was refused. It now checks the ports the node instance has, the ones the canvas draws (PythonScript, Split, ComposeTransform, Switch), including ports created earlier in the same batch. A `set_params` that removes ports removes their wires as the canvas does and lists them in `removed_edge_ids`, and a wire on a Switch's last input adds another input as on the canvas. `getNodeDefinitions()` gives such nodes a `dynamic_ports` field naming the param that sets each side's ports.
+
+- **The bundled digits examples run in a project again.** In 3.4.0's default project mode `CSVReader` resolved `data/samples/digits.csv` inside the project, so the seven examples that read it failed with "file not found"; only `data/samples/iris.csv` had been exempted. Every reader node (`CSVReader`, `DocumentLoader`, `TextCorpusDataset`) now shares one rule: a relative `data/samples/...` path without `..` names a bundled sample, read from the project when the project has a file at that path and from the install otherwise, whatever the working directory. A missing file's error names every place that was looked in and, when the path looks like a sample, lists the samples that exist.
+
 ## [3.4.0] — 2026-11-28
 
 ### Added

@@ -100,6 +100,9 @@ def _model_capabilities(provider: Provider) -> dict[str, bool]:
         # with display names and effort metadata; other providers retain the
         # legacy id-only model shape.
         "rich_model_catalog": provider == "openai-codex",
+        # Every adapter relays the upstream's reasoning as `reasoning_delta`
+        # events (round 6 H2); a client that knows can show "thinking".
+        "reasoning_stream": True,
     }
 
 
@@ -142,7 +145,10 @@ async def list_models(req: ModelsRequest) -> dict:
             "capabilities": _model_capabilities(req.provider),
         }
     except httpx.HTTPError as exc:
-        raise HTTPException(502, f"could not reach {req.provider}: {exc}") from exc
+        from ..core.llm_proxy._common import describe_failure
+
+        raise HTTPException(
+            502, f"could not reach {req.provider}: {describe_failure(exc, req.provider)}") from exc
     finally:
         await client.aclose()
 

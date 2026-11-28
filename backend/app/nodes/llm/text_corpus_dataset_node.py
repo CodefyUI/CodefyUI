@@ -40,14 +40,12 @@ from ...core.node_base import (
     PortDefinition,
 )
 
+from ...core.data_paths import missing_path_hint
+
 logger = logging.getLogger(__name__)
 
 #: The two things the ``source`` param may say.
 SOURCES = ["huggingface", "local_file"]
-
-#: ``backend/`` -- this file is ``backend/app/nodes/llm/``. Where the bundled
-#: ``data/samples/`` live, whatever directory the server was started from.
-_BACKEND_DIR = Path(__file__).resolve().parents[3]
 
 
 class TextRowDataset(Dataset):
@@ -73,29 +71,22 @@ def _resolve_corpus_path(path_str: str) -> Path:
     """Where a ``local_path`` param points, under the same rules ``CSVReader``
     uses for its DATA_FILE param.
 
-    Two cases beyond "use it as typed":
+    Three cases beyond "use it as typed":
 
     1. A BARE FILENAME is what the DATA_FILE upload dropdown produces, so it
        resolves against ``DATA_FILES_DIR`` -- picking a file must not depend on
        the server's working directory.
-    2. In PROJECT MODE a relative path resolves inside the project directory and
-       may not escape it, so a graph shared between machines cannot read
-       arbitrary files on the one that opens it.
-    3. A path under ``data/samples/`` names the install's bundled samples, the
-       rule ``DocumentLoader`` follows: it is exempt from rule 2 and, when the
-       working directory has no such file, read from ``backend/``. Without it
-       the Data mix ratios example only ran from a server started in
-       ``backend/`` and never in project mode.
-
-    Deliberately NOT importing ``CSVReaderNode._resolve_path``: that one also
-    special-cases the bundled ``data/samples/iris.csv`` and puts "CSVReader" in
-    its error message, neither of which belongs here. The shared rule is small
-    enough that a copy with this comment is cheaper than a third party module
-    both nodes have to agree with; if a fourth DATA_FILE reader appears, extract
-    it then.
+    2. A path under ``data/samples/`` names a bundled sample: the project's
+       copy when it has one, else the install's
+       (``core.data_paths.resolve_bundled_sample``, shared by every reader
+       node since round 6). Without it the Data mix ratios example only ran
+       from a server started in ``backend/`` and never in project mode.
+    3. In PROJECT MODE any other relative path resolves inside the project
+       directory and may not escape it, so a graph shared between machines
+       cannot read arbitrary files on the one that opens it.
     """
     from ...config import settings
-    from ...core.data_paths import working_dir_file
+    from ...core.data_paths import resolve_bundled_sample, working_dir_file
 
     path = Path(path_str)
     if not path.is_absolute() and path.parent == Path("."):
@@ -104,13 +95,8 @@ def _resolve_corpus_path(path_str: str) -> Path:
         candidate = settings.DATA_FILES_DIR / path.name
         if candidate.is_file():
             return candidate
-    normalised = path_str.replace("\\", "/")
-    if (not path.is_absolute() and normalised.startswith("data/samples/")
-            and ".." not in Path(normalised).parts):
-        from_cwd = Path.cwd() / normalised
-        if from_cwd.is_file():
-            return from_cwd
-        return _BACKEND_DIR / normalised
+    if (sample := resolve_bundled_sample(path_str)) is not None:
+        return sample
     if settings.PROJECT_DIR is not None and not path.is_absolute():
         project = settings.PROJECT_DIR.resolve()
         resolved = (project / path).resolve()
@@ -255,9 +241,11 @@ class TextCorpusDatasetNode(BaseNode):
                 default="",
                 description=(
                     "Text file to read. Pick one you uploaded from the "
-                    "dropdown, or type a path (absolute, or relative to the "
-                    "backend working dir; in project mode, relative paths "
-                    "resolve inside the project directory)."
+                    "dropdown, or type a path: a bundled sample as "
+                    "data/samples/<name> (data/samples/mix/facts.txt), which "
+                    "works in every mode, or a path relative to the project "
+                    "(project mode) or the backend working dir, or an "
+                    "absolute path."
                 ),
                 visible_when={"source": "local_file"},
             ),
@@ -326,7 +314,8 @@ class TextCorpusDatasetNode(BaseNode):
         path = _resolve_corpus_path(path_str)
         if not path.is_file():
             raise FileNotFoundError(
-                f"TextCorpusDataset: no file at {path}. Check `local_path`.")
+                f"TextCorpusDataset: no file at {path}. Check `local_path`."
+                + missing_path_hint(path_str, path))
 
         try:
             text = path.read_text(encoding="utf-8")

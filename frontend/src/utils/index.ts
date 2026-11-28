@@ -230,7 +230,8 @@ export function isParamVisible(
   return true;
 }
 
-const SPLIT_MAX_CHUNKS = 32;
+/** Mirrors `split_node`'s chunk cap. */
+export const SPLIT_MAX_CHUNKS = 32;
 
 /** Mirrors `python_script_node.MAX_PORTS`. */
 export const SCRIPT_MAX_PORTS = 8;

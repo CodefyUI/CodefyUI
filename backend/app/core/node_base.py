@@ -292,6 +292,20 @@ class BaseNode(ABC):
     REQUIRES_PACK: ClassVar[str | None] = None
 
     @classmethod
+    def static_issues(cls, params: dict[str, Any]) -> list[dict[str, Any]]:
+        """Problems the run is sure to hit, found from *params* alone.
+
+        ``validate_graph`` reports each as a validation error, so a graph
+        the run would refuse is not answered "valid" (round 6 H3: a
+        PythonScript importing ``sklearn`` validated, then failed at run
+        time). Each item is ``{"code": str, "message": str, **params}``;
+        the message should name what to change. Must reuse the check the
+        run itself makes -- never a second copy of a rule -- and must not
+        execute anything. Default: none.
+        """
+        return []
+
+    @classmethod
     def cache_fingerprint(cls, params: dict[str, Any]) -> Any:
         """Extra state to fold into the cache key, beyond params and
         upstream keys (#144, #145).

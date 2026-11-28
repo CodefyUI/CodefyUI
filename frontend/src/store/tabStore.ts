@@ -6,8 +6,6 @@ import {
   buildFlowNode,
   buildNoteNode,
   isBypassable,
-  resolveDynamicInputs,
-  resolveDynamicOutputs,
   resolveSerializedEdges,
   resolveSerializedNodes,
   migrateStaleEdgeStrokes,
@@ -22,6 +20,7 @@ import {
 } from './nodeDefStore';
 import { forgetViewport } from '../utils/viewportMemory';
 import { withoutOccupants } from '../utils/occupiedInput';
+import { staleEdges } from '../utils/livePorts';
 import { idbAvailable } from '../utils/idb';
 import { withParamDefaults, withSubgraphParamDefaults } from '../utils/paramDefaults';
 import { readSnapshot, writeSnapshot } from './tabPersistence';
@@ -1794,55 +1793,6 @@ function closeFrameHistory(
     // reached from here.
     redoStack: [],
   };
-}
-
-const NO_STALE_EDGES: ReadonlySet<string> = new Set<string>();
-
-/**
- * Ids of edges a param edit would leave hanging off a handle that no longer
- * exists (core#131).
- *
- * Only ports the resolver itself produced are candidates, so trigger handles
- * and preset ports — which this knows nothing about — are never touched. For
- * every node whose ports do NOT depend on params the two resolvers hand back
- * the definition's own arrays, so the identity check below settles it in two
- * comparisons; the set work only runs for the handful of nodes the two
- * resolvers actually expand (Split, PythonScript, ComposeTransform today).
- */
-function staleEdges(
-  node: Node<NodeData> | undefined,
-  nextParams: Record<string, unknown>,
-  edges: Edge[],
-): ReadonlySet<string> {
-  const def = node?.data.definition;
-  if (!node || !def) return NO_STALE_EDGES;
-
-  const inputsBefore = resolveDynamicInputs(def, node.data.params);
-  const inputsAfter = resolveDynamicInputs(def, nextParams);
-  const outputsBefore = resolveDynamicOutputs(def, node.data.params);
-  const outputsAfter = resolveDynamicOutputs(def, nextParams);
-  if (inputsBefore === inputsAfter && outputsBefore === outputsAfter) {
-    return NO_STALE_EDGES;
-  }
-
-  const names = (ports: { name: string }[]) => new Set(ports.map((p) => p.name));
-  const hadInput = names(inputsBefore);
-  const hasInput = names(inputsAfter);
-  const hadOutput = names(outputsBefore);
-  const hasOutput = names(outputsAfter);
-
-  const stale = new Set<string>();
-  for (const edge of edges) {
-    const from = edge.sourceHandle;
-    const to = edge.targetHandle;
-    if (edge.source === node.id && from && hadOutput.has(from) && !hasOutput.has(from)) {
-      stale.add(edge.id);
-    }
-    if (edge.target === node.id && to && hadInput.has(to) && !hasInput.has(to)) {
-      stale.add(edge.id);
-    }
-  }
-  return stale;
 }
 
 // ── Serialization helpers ──

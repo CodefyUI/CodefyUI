@@ -7,13 +7,106 @@ adapter so callers import from a single authoritative location.
 from __future__ import annotations
 
 import json
+import logging
+import os
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
-# Upstream connect/read timeout.  Reads are long (model thinking time between
-# SSE chunks) -- 120 s idle gap tolerated, 10 s to connect.
-TIMEOUT = httpx.Timeout(10.0, read=120.0)
+logger = logging.getLogger("app.llm_proxy")
+
+#: Seconds to connect to an upstream.
+CONNECT_TIMEOUT_S = 10.0
+#: Seconds an upstream may go without sending anything, by provider. A local
+#: model that thinks before it answers (Ollama with a reasoning model) can be
+#: silent for minutes on a cold start, so ``custom`` waits longer.
+DEFAULT_READ_TIMEOUT_S = 120.0
+CUSTOM_READ_TIMEOUT_S = 600.0
+#: Overrides the read timeout for every provider, in seconds.
+READ_TIMEOUT_ENV = "CODEFYUI_LLM_READ_TIMEOUT"
+
+# Kept for callers that imported it: the default provider's timeout.
+TIMEOUT = httpx.Timeout(CONNECT_TIMEOUT_S, read=DEFAULT_READ_TIMEOUT_S)
+
+
+def read_timeout(provider: str) -> float:
+    """The read timeout for *provider*: ``CODEFYUI_LLM_READ_TIMEOUT`` when it
+    is a positive number of seconds, else 600 for ``custom`` and 120 for the
+    rest. Read on every request, so a changed setting needs no restart."""
+    raw = os.environ.get(READ_TIMEOUT_ENV, "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            value = 0.0
+        if value > 0:
+            return value
+        logger.warning("%s=%r is not a positive number of seconds; using the default",
+                       READ_TIMEOUT_ENV, raw)
+    return CUSTOM_READ_TIMEOUT_S if provider == "custom" else DEFAULT_READ_TIMEOUT_S
+
+
+def timeout_for(provider: str) -> httpx.Timeout:
+    return httpx.Timeout(CONNECT_TIMEOUT_S, read=read_timeout(provider))
+
+
+def _host_of(exc: httpx.HTTPError) -> str:
+    try:
+        url = exc.request.url
+    except RuntimeError:
+        return "the endpoint"
+    parts = urlsplit(str(url))
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    return f"{parts.hostname}:{port}" if parts.hostname else "the endpoint"
+
+
+def describe_failure(exc: httpx.HTTPError, provider: str) -> str:
+    """``<ExceptionClass>: <a plain sentence>`` -- never empty.
+
+    ``str(httpx.ReadTimeout())`` is the empty string, which is how a user
+    once read "upstream request failed: " and nothing after it.
+    """
+    name = type(exc).__name__
+    detail = str(exc).strip()
+    if isinstance(exc, httpx.ReadTimeout):
+        sentence = (f"the endpoint sent no data for {read_timeout(provider):g} seconds "
+                    f"(set {READ_TIMEOUT_ENV} to wait longer)")
+    elif isinstance(exc, httpx.ConnectTimeout):
+        sentence = f"could not connect to {_host_of(exc)} within {CONNECT_TIMEOUT_S:g} seconds"
+    elif isinstance(exc, httpx.ConnectError):
+        sentence = f"cannot reach {_host_of(exc)}"
+    elif isinstance(exc, httpx.WriteTimeout):
+        sentence = "sending the request to the endpoint timed out"
+    elif isinstance(exc, httpx.PoolTimeout):
+        sentence = "no connection to the endpoint became free in time"
+    elif isinstance(exc, httpx.RemoteProtocolError):
+        sentence = "the endpoint closed the connection in the middle of the response"
+    elif isinstance(exc, httpx.ReadError):
+        sentence = "the connection to the endpoint broke while reading the response"
+    else:
+        sentence = "the request to the endpoint failed"
+    if detail and detail not in sentence:
+        sentence = f"{sentence} ({detail})"
+    return f"{name}: {sentence}"
+
+
+def upstream_failure(exc: httpx.HTTPError, provider: str, model: str) -> str:
+    """The ``error`` event message for *exc*, logged once with the provider
+    and model -- never the key, the URL's query or the conversation."""
+    logger.warning("LLM upstream request failed: %s (provider=%s, model=%s)",
+                   type(exc).__name__, provider, model)
+    return f"upstream request failed: {describe_failure(exc, provider)}"
+
+
+def should_retry(exc: httpx.HTTPError, *, received: bool, attempt: int) -> bool:
+    """Retry once on a transport error before ANY byte of the response
+    arrived (a dropped keep-alive connection, a refused connect while a
+    local server restarts). Never after data arrived, which would repeat
+    output, and never on a timeout, which would double a long wait."""
+    return (attempt == 0 and not received
+            and isinstance(exc, httpx.TransportError)
+            and not isinstance(exc, httpx.TimeoutException))
 
 
 def parse_tool_args(raw: str) -> dict[str, Any]:

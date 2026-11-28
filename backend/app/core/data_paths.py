@@ -466,3 +466,157 @@ def upload_file_name(filename: str) -> str:
     name = PurePosixPath(filename).name
     check_file_name(name)
     return name
+
+
+# ── the bundled samples (round 6, H0) ───────────────────────────────────
+
+#: How a graph parameter names a sample that ships with the install.
+BUNDLED_SAMPLES_PREFIX = "data/samples/"
+
+#: ``backend/`` -- this file is ``backend/app/core/``. The bundled samples
+#: live in ``backend/data/samples`` whatever directory the server runs from.
+_BACKEND_DIR = Path(__file__).resolve().parents[2]
+
+
+def bundled_samples_dir() -> Path:
+    """The install's ``data/samples`` folder."""
+    return _BACKEND_DIR / "data" / "samples"
+
+
+def bundled_sample_relative(path_str: str) -> str | None:
+    """*path_str* normalised to ``data/samples/...`` when it names a bundled
+    sample, else None.
+
+    It names one when it is relative, starts with ``data/samples/`` once
+    backslashes are read as separators (a graph saved on Windows), and no
+    component is ``..`` -- ``data/samples/../../x`` wears the prefix and
+    points anywhere.
+    """
+    if not isinstance(path_str, str):
+        return None
+    normalised = path_str.strip().replace("\\", "/")
+    if not normalised.startswith(BUNDLED_SAMPLES_PREFIX):
+        return None
+    if PurePosixPath(normalised).is_absolute() or Path(normalised).is_absolute():
+        return None
+    if ".." in PurePosixPath(normalised).parts:
+        return None
+    return normalised
+
+
+def bundled_sample_candidates(path_str: str) -> list[Path] | None:
+    """Where a ``data/samples/...`` path is looked for, in order, or None
+    when *path_str* is not such a path.
+
+    1. The open project (project mode only): a file the user put at that
+       path in their project wins over the bundled one -- unless it resolves
+       outside the project (a symbolic link), when it is left out.
+    2. The working directory: an exported script run next to its own
+       ``data/samples`` folder, and the server's old reading (it runs from
+       ``backend/``).
+    3. The install's ``backend/`` folder, where the samples ship.
+    """
+    relative = bundled_sample_relative(path_str)
+    if relative is None:
+        return None
+    candidates: list[Path] = []
+    if settings.PROJECT_DIR is not None:
+        project = Path(settings.PROJECT_DIR).resolve()
+        own = project / relative
+        # Only when it resolves inside the project: a cloned project holding
+        # ``data/samples/iris.csv -> /anything`` must not read a file outside
+        # it while looking like the bundled sample. Skipped, not refused --
+        # the install's copy is the next candidate.
+        try:
+            inside = own.resolve().is_relative_to(project)
+        except (OSError, RuntimeError):
+            inside = False
+        if inside:
+            candidates.append(own)
+    candidates.append(Path.cwd() / relative)
+    candidates.append(_BACKEND_DIR / relative)
+    seen: list[Path] = []
+    for candidate in candidates:
+        if candidate not in seen:
+            seen.append(candidate)
+    return seen
+
+
+def resolve_bundled_sample(path_str: str) -> Path | None:
+    """The file or folder a ``data/samples/...`` path names, or None when
+    *path_str* is not such a path.
+
+    The first candidate of :func:`bundled_sample_candidates` that exists;
+    when none does, the install location, which is the path a "not found"
+    error should name alongside the others (:func:`not_found_message`).
+    The one rule every reader node shares, so a sample added later is found
+    by all of them in every mode -- before it, ``CSVReader`` exempted
+    ``data/samples/iris.csv`` alone and every digits example failed in a
+    project.
+    """
+    candidates = bundled_sample_candidates(path_str)
+    if candidates is None:
+        return None
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[-1]
+
+
+def bundled_sample_names() -> list[str]:
+    """Every bundled sample as a parameter would spell it, sorted: the files
+    directly in ``data/samples`` and its folders (``data/samples/rag``),
+    then the files one level down (``data/samples/mix/facts.txt``)."""
+    root = bundled_samples_dir()
+    if not root.is_dir():
+        return []
+    names: list[str] = []
+    for entry in sorted(root.iterdir()):
+        if entry.name.startswith("."):
+            continue
+        names.append(BUNDLED_SAMPLES_PREFIX + entry.name)
+        if entry.is_dir():
+            for child in sorted(entry.iterdir()):
+                if child.is_file() and not child.name.startswith("."):
+                    names.append(f"{BUNDLED_SAMPLES_PREFIX}{entry.name}/{child.name}")
+    return names
+
+
+def _looks_like_sample(path_str: str) -> bool:
+    """Whether a missing *path_str* was probably meant as a bundled sample:
+    it has the prefix, mentions a ``samples`` folder, or its file name is
+    one a sample has (a model that guessed ``digits.csv``)."""
+    normalised = str(path_str).strip().replace("\\", "/")
+    if normalised.startswith(BUNDLED_SAMPLES_PREFIX):
+        return True
+    parts = PurePosixPath(normalised).parts
+    if "samples" in parts:
+        return True
+    name = PurePosixPath(normalised).name
+    return bool(name) and any(PurePosixPath(n).name == name for n in bundled_sample_names())
+
+
+def missing_path_hint(path_str: str, resolved: Path) -> str:
+    """What a reader node's "not found" error adds after its own sentence:
+    every place it looked, and -- when *path_str* looks like a bundled
+    sample -- the samples that do exist, spelled the way the parameter
+    takes them. Starts with a space, so it is appended as is.
+
+    *resolved* is where the node's own rule ended up. For a ``data/samples``
+    path that is the last of several candidates, all of which are named.
+    """
+    candidates = bundled_sample_candidates(path_str) or [resolved]
+    hint = " Looked in: " + ", ".join(str(c) for c in candidates) + "."
+    if _looks_like_sample(path_str):
+        names = bundled_sample_names()
+        if names:
+            hint += (" Bundled samples: " + ", ".join(names)
+                     + ". Use one of these paths exactly.")
+    return hint
+
+
+def not_found_message(node: str, path_str: str, resolved: Path, *,
+                      what: str = "file") -> str:
+    """``<node>: <what> not found: '<path>'.`` plus :func:`missing_path_hint`."""
+    return (f"{node}: {what} not found: {path_str!r}."
+            + missing_path_hint(path_str, resolved))

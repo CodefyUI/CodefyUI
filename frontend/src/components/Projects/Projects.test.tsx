@@ -540,6 +540,28 @@ describe('Mods consent', () => {
     fetchDefinitions.mockRestore();
   });
 
+  it('a presets-only tree an agent wrote is listed and can be trusted (round 6 H5)', async () => {
+    useProjectStore.setState({ overview: overview({ mods: MODS_NEEDS }) });
+    api.getProjectMods.mockResolvedValue(modsScan({
+      files: [{ path: 'presets/aug.json', size: 2, role: 'preset', sha256: '3'.repeat(64) }],
+      trust: { state: 'changed', digest: MODS_DIGEST,
+        changed: { added: ['presets/aug.json'], removed: [], changed: [] } },
+    }));
+    api.trustProjectMods.mockResolvedValue({
+      ...switched('alpha'),
+      mods: { state: 'trusted', loaded: true, needs_consent: false, nodes: [], skipped: [] },
+    });
+    const fetchDefinitions = vi.spyOn(useNodeDefStore.getState(), 'fetchDefinitions')
+      .mockResolvedValue(undefined);
+    await renderSettled(<ProjectNotices />);
+    const dialog = await screen.findByTestId('project-mods-consent');
+    const rows = await within(dialog).findAllByTestId('mods-file');
+    expect(rows.map((r) => r.querySelector('code')!.textContent)).toEqual(['mods/presets/aug.json']);
+    fireEvent.click(within(dialog).getByTestId('mods-trust'));
+    await waitFor(() => expect(api.trustProjectMods).toHaveBeenCalledWith(MODS_DIGEST, false));
+    fetchDefinitions.mockRestore();
+  });
+
   it('"trust these files completely" is asked for, and sent', async () => {
     useProjectStore.setState({ overview: overview({ mods: MODS_NEEDS }) });
     api.getProjectMods.mockResolvedValue(modsScan());

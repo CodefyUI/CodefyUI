@@ -117,6 +117,30 @@ export interface SubgraphDefinition {
   interface: SubgraphInterface;
 }
 
+/**
+ * How a node's ports follow its params (apiVersion 7). Port names are
+ * `prefix` + index, counting from `first_index`, for the count in
+ * `count_param` clamped into `min..max`; `types_param` holds their data types
+ * as a comma list when the node has one. `fixed` ports follow the counted
+ * ones whatever the count. `grows_on_connect`: a wire on the last counted
+ * input adds another.
+ */
+export interface DynamicPorts {
+  count_param: string;
+  prefix: string;
+  first_index: number;
+  min: number;
+  max: number;
+  types_param?: string;
+  fixed?: string[];
+  grows_on_connect?: boolean;
+}
+
+export interface DynamicPortsInfo {
+  inputs?: DynamicPorts;
+  outputs?: DynamicPorts;
+}
+
 export interface NodeDefinition {
   node_name: string;
   category: string;
@@ -134,6 +158,13 @@ export interface NodeDefinition {
   inputs: PortDefinition[];
   outputs: PortDefinition[];
   params: ParamDefinition[];
+  /**
+   * Present when some ports follow params (PythonScript, Split,
+   * ComposeTransform, Switch): which param sets them and how they are named.
+   * The `inputs`/`outputs` lists above are the default params' ports.
+   * apiVersion 7.
+   */
+  dynamic_ports?: DynamicPortsInfo;
   /**
    * Package Center. The optional pack this node needs before it can run at
    * all; null for everything the base install already covers. Optional for

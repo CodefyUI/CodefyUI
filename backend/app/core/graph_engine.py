@@ -1761,6 +1761,28 @@ def validate_graph(
         if named.definition is None:
             errors.append(named.refusal())
 
+    # What the run is sure to refuse, found from a node's params alone
+    # (round 6 H3: a PythonScript importing a module the Tier-0 gate blocks
+    # validated, then failed at run time). Each node class runs its own
+    # run-time check here -- ``BaseNode.static_issues``.
+    for node in nodes:
+        if node["id"] not in valid_node_ids or node["id"] in opaque_node_ids:
+            continue
+        node_cls = registry.get(node["type"])
+        node_params = node.get("data", {}).get("params", {}) if isinstance(node.get("data"), dict) else {}
+        try:
+            issues = node_cls.static_issues(node_params if isinstance(node_params, dict) else {})
+        except Exception:  # noqa: BLE001 -- a check that breaks must not break validate
+            logger.exception("static_issues failed for %s", node["type"])
+            issues = []
+        for issue in issues:
+            extra = {k: v for k, v in issue.items() if k not in ("code", "message")}
+            errors.append(validation_issue(
+                issue.get("code", "static_issue"),
+                f"{node['type']} node {node['id']}: {issue.get('message', '')}",
+                node_id=node["id"], type=node["type"], **extra,
+            ))
+
     # 2. Required input connection check (skip opaque nodes — dynamic ports)
     connected_inputs = {
         (edge["target"], edge.get("targetHandle", ""))

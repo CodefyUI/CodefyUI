@@ -16,8 +16,15 @@ from typing import Any
 import httpx
 
 from . import codex_auth, codex_models
-from ._common import TIMEOUT, content_to_text, parse_tool_args
-from .events import done_event, error_event, text_delta
+from ._common import (
+    content_to_text,
+    describe_failure,
+    parse_tool_args,
+    should_retry,
+    timeout_for,
+    upstream_failure,
+)
+from .events import done_event, error_event, reasoning_delta, text_delta
 from .schema import ChatRequest, ToolCall
 
 _URL = "https://chatgpt.com/backend-api/codex/responses"
@@ -79,7 +86,7 @@ async def stream_chat(
         yield error_event("Not signed in to ChatGPT - open Settings to sign in.")
         return
     except httpx.HTTPError as exc:
-        yield error_event(f"token refresh failed: {exc}")
+        yield error_event(f"token refresh failed: {describe_failure(exc, req.provider)}")
         return
 
     payload = build_payload(req)
@@ -88,7 +95,12 @@ async def stream_chat(
     usage: dict[str, int] = {}
     failed: str | None = None
 
-    for attempt in (0, 1):
+    # attempt: the one 401 refresh; transport_attempt: the one retry of a
+    # transport error before any byte arrived (_common.should_retry).
+    attempt = 0
+    transport_attempt = 0
+    while True:
+        received = False
         headers = {
             "authorization": f"Bearer {access}",
             "chatgpt-account-id": account,
@@ -98,8 +110,10 @@ async def stream_chat(
         }
         try:
             async with client.stream("POST", _URL, json=payload, headers=headers,
-                                     timeout=TIMEOUT) as resp:
+                                     timeout=timeout_for(req.provider)) as resp:
+                received = True
                 if resp.status_code == 401 and attempt == 0:
+                    attempt += 1
                     try:
                         access, account = await codex_auth.get_valid_access(
                             client, force_refresh=True)
@@ -119,7 +133,12 @@ async def stream_chat(
                     except json.JSONDecodeError:
                         continue
                     etype = ev.get("type")
-                    if etype == "response.output_text.delta":
+                    if etype in ("response.reasoning_summary_text.delta",
+                                 "response.reasoning_text.delta"):
+                        thought = ev.get("delta", "")
+                        if isinstance(thought, str) and thought:
+                            yield reasoning_delta(thought)
+                    elif etype == "response.output_text.delta":
                         delta = ev.get("delta", "")
                         if delta:
                             content_parts.append(delta)
@@ -141,7 +160,10 @@ async def stream_chat(
                         failed = err.get("message") or "response.failed"
             break
         except httpx.HTTPError as exc:
-            yield error_event(f"upstream request failed: {exc}")
+            if should_retry(exc, received=received, attempt=transport_attempt):
+                transport_attempt += 1
+                continue
+            yield error_event(upstream_failure(exc, req.provider, req.model))
             return
 
     if failed:

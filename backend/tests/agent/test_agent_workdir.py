@@ -154,12 +154,14 @@ def _sample_spec() -> dict:
 
 def test_a_bundled_sample_reads_once_the_agent_is_in_backend(
         monkeypatch, tmp_path, saved_environ):
-    """B2 of #839, end to end in the run code: from the home directory the
-    sample is not found; after the agent's start-up change it reads."""
+    """B2 of #839, end to end in the run code. Since round 6 (H0) a
+    ``data/samples/`` path falls back to the install whatever the working
+    directory, so the sample reads from the home directory too; it still
+    reads after the agent's start-up change into ``backend/``."""
     monkeypatch.chdir(tmp_path)
-    missed = _run(_sample_spec())
-    assert missed[-1][1]["status"] == "failed"
-    assert "file not found" in missed[-1][1]["error"]
+    from_home = _run(_sample_spec())
+    assert from_home[-1] == (child.MSG_FINISHED, {
+        "status": "succeeded", "error": None, "peak_memory": None})
     assert agent_cli.enter_backend_dir()
     sent = _run(_sample_spec())
     assert sent[-1] == (child.MSG_FINISHED, {
