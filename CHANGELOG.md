@@ -22,6 +22,8 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+## [3.4.0] — 2026-11-28
+
 ### Added
 
 - **Graphs stored as folders (storage v2).** In a project whose manifest has `[storage] graph_format = "dir"` (new projects from the server and `cdui project init`), a new graph is saved as `graphs/<name>/`: `index.json`, one file per node, long text parameters such as code as their own `.py`/`.txt` files, `edges.jsonl`, and a folder per block. Editing one parameter rewrites one file and a save that changed nothing writes nothing. A save is checked in memory before any file is written and refused (500) if the files would not read back as the graph. Repairs needed to read a folder are shown once in the editor and never saved without you; `cdui project validate` lists them and fails. Existing graphs keep their form. See `docs/docs/usage/project-directories.md#graphs-stored-as-folders`.
@@ -39,7 +41,6 @@ received — each links to the release it was published as.
 - **Fifteen practical built-in examples**, each offline, seeded and done in a few seconds on a CPU. Data: **Inspect a dataset first** (`Data/Dataset-Inspection`), **Split and check for leaks** (`Data/Split-And-Leak-Check`). Training: **Early stopping, keep the best** (`Training/Early-Stopping-Best-Checkpoint`), **Transfer with a frozen backbone** (`Training/Transfer-Frozen-Backbone`; pretrain on ten digits, learn a new label from 20 images). Evaluation: **Five seeds, mean and spread** (`Evaluation/Multi-Seed-Mean-Std`), **Evaluate a saved checkpoint** (`Evaluation/Checkpoint-Confusion-Matrix`), **Compare two checkpoints** (`Evaluation/Compare-Two-Checkpoints`), **Project embeddings to 2D** (`Evaluation/Embedding-Projection-2D`). Experiments: **Find a learning rate** (`Research/LR-Range-Test`), **Learning rate x batch size** (`Research/LR-BatchSize-Grid`), **Ablation: input scaling** (`Research/Ablation-Input-Standardization`). Deploy: **Train and export a classifier** and **Serve a classifier over HTTP** (`Deploy/Classifier-Service/`; the second loads the weights the first writes). LLM: **Measure retrieval hit rate** (`LLM/RAG-Retrieval-Hit-Rate`, no pack needed) and **Fine-tune a tiny char LM** (`LLM/Finetune-Char-LM-Custom-Text`). The gallery now holds 87 built-in examples.
 - **`FreezeParameters` node** sets `requires_grad` for a model's parameters by name prefix, for training only a new head on a frozen backbone.
 - **Bundled sample `backend/data/samples/digits.csv`**: the 1,797 8x8 UCI handwritten digits (CC BY 4.0, credited in `THIRD_PARTY_NOTICES.md`), used by seven of the new examples.
-
 - **Project mods.** A project can carry its own nodes in `mods/nodes/*.py` and preset cards in `mods/presets/`. They are named `project:<NODE_NAME>` (a bare name never resolves to one, so a project `Conv2d` leaves the built-in alone) and the palette says where each node comes from. Nothing in `mods/` runs until you agree: a project you open or clone lists every file with its size, line count, scan result and node names, and the plain warning that these files are Python run with your permissions and the scan is a hint, not a sandbox. Consent is for exactly those bytes; a change asks again at the next load. **Not now** opens the project without them; a graph that uses them shows **NOT LOADED** nodes and a banner, saves them unchanged, and run, validate and publish say why they fail. Symbolic links, compiled files, `__pycache__` and packages under `mods/nodes/` are never loaded, and when any is there nothing in `mods/` loads. A project this install created loads its own edits without asking while its git `HEAD` stays where its baseline (recorded at creation and at every load, mods or not) saw it; mods that arrive through a pull ask, including the first ones. When `mods/` changes on disk after loading, the editor says so and checks only when asked. Files that are never loaded are marked so in the prompt. See `docs/docs/usage/project-directories.md#project-mods`.
 - **`cdui project mods <dir>`** shows the scan and sha256 of `mods/`; `--trust` asks and records consent (`--yes` for CI, which is consent to run the code; `--full` also runs files with findings); `--write` rewrites the manifest's informational `[mods]` block, which `cdui project validate` checks against `mods/`.
 - **`cdui project freeze --used-only`** pins only the plugins the project's graphs use.
@@ -69,6 +70,7 @@ received — each links to the release it was published as.
 - A graph that cannot be read, or that exists both as a folder and as a single file, no longer empties the Graphs panel: it is listed, greyed out, with the reason. Opening it answers 422 instead of 500.
 - A graph name longer than 100 characters is refused with 400 instead of failing with 500; Windows reserved names (`CON`, `aux`...) are saved with a trailing `_`.
 - Renaming a graph to the same name in another letter case works on macOS and Windows.
+- On Windows, graph files, layout files and the projects registry are written with LF line endings, as the docs and the project `.gitattributes` say; they were written CRLF.
 
 ## [3.3.0] — 2026-11-27
 
@@ -6350,7 +6352,8 @@ Release candidates before 1.0.0 are on the
 [#610]: https://github.com/CodefyUI/CodefyUI/issues/610
 [#562]: https://github.com/CodefyUI/CodefyUI/issues/562
 [#657]: https://github.com/CodefyUI/CodefyUI/issues/657
-[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/3.3.0...main
+[Unreleased]: https://github.com/CodefyUI/CodefyUI/compare/3.4.0...main
+[3.4.0]: https://github.com/CodefyUI/CodefyUI/compare/3.3.0...3.4.0
 [3.3.0]: https://github.com/CodefyUI/CodefyUI/compare/3.2.0...3.3.0
 [3.2.0]: https://github.com/CodefyUI/CodefyUI/compare/3.1.1...3.2.0
 [3.1.1]: https://github.com/CodefyUI/CodefyUI/compare/3.1.0...3.1.1
