@@ -241,6 +241,8 @@ const en = {
   'palette.noMatch': 'No matching nodes',
   'palette.empty': 'No nodes available',
   'palette.hint': 'Drag nodes onto the canvas',
+  'palette.namesOnly': 'Names only',
+  'palette.namesOnly.title': 'Show node names only, without the description line',
   'palette.fromPlugin': 'From plugin: {plugin}',
   'palette.fromProjectMods': 'From this project’s mods/ folder',
   'palette.fromCustom': 'Custom node, installed on this computer',

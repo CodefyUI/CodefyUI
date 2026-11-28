@@ -3,6 +3,7 @@ import { renderHook, waitFor } from '@testing-library/react';
 import { useDragAndDrop } from './useDragAndDrop';
 import { useTabStore } from '../store/tabStore';
 import { useNodeDefStore } from '../store/nodeDefStore';
+import { useUIStore } from '../store/uiStore';
 import * as rest from '../api/rest';
 
 // Only the example fetch is stubbed. The drop then runs the real
@@ -131,6 +132,15 @@ describe('useDragAndDrop - onDrop node branch', () => {
     const nodes = activeNodes();
     expect(nodes).toHaveLength(1);
     expect(nodes[0].data.type).toBe('Dataset');
+  });
+
+  it('marks the palette hint as seen once a node lands (phase 5)', () => {
+    useUIStore.setState({ paletteHintSeen: false });
+    const { result } = renderHook(() => useDragAndDrop());
+    result.current.onDrop(makeDragEvent({ 'application/codefyui-node': 'Nope' }));
+    expect(useUIStore.getState().paletteHintSeen).toBe(false);
+    result.current.onDrop(makeDragEvent({ 'application/codefyui-node': 'Dataset' }));
+    expect(useUIStore.getState().paletteHintSeen).toBe(true);
   });
 
   it('does NOT add a node when the node type has no matching definition', () => {

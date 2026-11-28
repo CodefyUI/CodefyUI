@@ -177,6 +177,18 @@ export function ExpandAllIcon({ size }: { size?: number }) {
   );
 }
 
+/** A list row's name and its description line: the palette density toggle. */
+export function ListDetailsIcon({ size }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <line x1="4" y1="6" x2="20" y2="6" />
+      <line x1="4" y1="10" x2="14" y2="10" />
+      <line x1="4" y1="15" x2="20" y2="15" />
+      <line x1="4" y1="19" x2="14" y2="19" />
+    </Icon>
+  );
+}
+
 /** Collapse every category accordion. */
 export function CollapseAllIcon({ size }: { size?: number }) {
   return (

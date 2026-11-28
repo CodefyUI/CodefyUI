@@ -25,6 +25,7 @@ import { MathText } from '../shared/MathText';
 import { orderCategories } from './categories';
 import { nodeCategoryLabel } from '../../utils/categoryLabels';
 import { CategoryList, type CategoryGroup } from './CategoryList';
+import { ListDetailsIcon } from '../shared/Icons';
 import styles from './NodePalette.module.css';
 
 // ── Operation Node Item ──
@@ -65,6 +66,7 @@ export function NodeItem({ definition }: NodeItemProps) {
         : pluginName === null ? null : t('palette.fromPlugin', { plugin: pluginName });
 
   const desc = tn(definition.node_name, 'description', definition.description);
+  const namesOnly = useUIStore((s) => s.paletteDensity === 'names');
 
   const handleMouseEnter = useCallback(() => {
     setHovered(true);
@@ -100,7 +102,7 @@ export function NodeItem({ definition }: NodeItemProps) {
       onDragStart={handleDragStart}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
-      className={styles.nodeItem}
+      className={namesOnly ? `${styles.nodeItem} ${styles.nodeItemCompact}` : styles.nodeItem}
       style={{
         background: hovered ? 'var(--surface-hover)' : 'transparent',
         borderColor: hovered ? 'var(--border-base)' : 'transparent',
@@ -125,8 +127,15 @@ export function NodeItem({ definition }: NodeItemProps) {
           {t('palette.needsPack')}
         </span>
       )}
-      {/* MathText, as on the card: a few descriptions carry a $...$ formula. */}
-      {desc && <MathText as="div" className={styles.nodeItemDesc} text={desc} />}
+      {/* MathText, as on the card: a few descriptions carry a $...$ formula.
+          One line, cut with an ellipsis (phase 5); the whole text is in the
+          hover tooltip, or in `title` when tooltips are off -- never both,
+          the same rule as the pack chip above. Names-only density drops it. */}
+      {desc && !namesOnly && (
+        <div className={styles.nodeItemDesc} title={tooltipsEnabled ? undefined : desc}>
+          <MathText text={desc} />
+        </div>
+      )}
       {showTooltip && createPortal(
         <div
           className={styles.nodeTooltip}
@@ -171,6 +180,7 @@ export function PresetItem({ preset }: PresetItemProps) {
   const difficulty = (Array.isArray(tags) ? tags : []).find(isDifficulty);
   const { t, tp } = useI18n();
   const description = tp(preset.preset_name, preset.description);
+  const namesOnly = useUIStore((s) => s.paletteDensity === 'names');
 
   const handleDragStart = (event: React.DragEvent) => {
     event.dataTransfer.setData('application/codefyui-preset', preset.preset_name);
@@ -184,7 +194,7 @@ export function PresetItem({ preset }: PresetItemProps) {
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       title={description}
-      className={styles.presetItem}
+      className={namesOnly ? `${styles.presetItem} ${styles.presetItemCompact}` : styles.presetItem}
       // Gold preset-hover tint: a semantic per-item accent (same family as
       // CATEGORY_COLORS/DIFFICULTY_COLORS below), not chrome, so it is left
       // outside the grey/accent token sweep. Close to --status-preset
@@ -212,12 +222,16 @@ export function PresetItem({ preset }: PresetItemProps) {
           </span>
         )}
       </div>
-      <div className={styles.presetDesc}>
-        {description}
-      </div>
-      <div className={styles.presetNodeCount}>
-        {t('empty.nodeCount', { count: readablePresetNodes(preset).length })}
-      </div>
+      {!namesOnly && (
+        <>
+          <div className={styles.presetDesc}>
+            {description}
+          </div>
+          <div className={styles.presetNodeCount}>
+            {t('empty.nodeCount', { count: readablePresetNodes(preset).length })}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -261,6 +275,9 @@ export function NodesTab() {
   const error = useNodeDefStore((s) => s.error);
   const refetch = useNodeDefStore((s) => s.fetchDefinitions);
   const beginnerMode = useUIStore((s) => s.beginnerMode);
+  const namesOnly = useUIStore((s) => s.paletteDensity === 'names');
+  const togglePaletteDensity = useUIStore((s) => s.togglePaletteDensity);
+  const hintSeen = useUIStore((s) => s.paletteHintSeen);
   const pluginsById = usePluginStore(selectPluginsById);
   const [searchQuery, setSearchQuery] = useState('');
   // `locale` is a dependency of the list below: `tn` and `presetSearchTexts`
@@ -383,14 +400,32 @@ export function NodesTab() {
                   ? t('palette.presets.category')
                   : nodeCategoryLabel(category, t)
               }
+              toolbarStart={
+                <button
+                  type="button"
+                  className={`${styles.toolbarButton} ${namesOnly ? styles.toolbarButtonOn : ''}`}
+                  onClick={togglePaletteDensity}
+                  aria-pressed={namesOnly}
+                  aria-label={t('palette.namesOnly')}
+                  title={t('palette.namesOnly.title')}
+                  data-testid="palette-density-toggle"
+                >
+                  <ListDetailsIcon size={13} />
+                </button>
+              }
             />
           )
         )}
       </div>
 
-      <div className={styles.footer}>
-        {t('palette.hint')}
-      </div>
+      {/* Until the first drop, and again whenever a search finds nothing
+          (phase 5): once a node has been dragged out, the line only took a
+          row the list could use. */}
+      {(!hintSeen || (searchQuery.trim() !== '' && groups.length === 0)) && (
+        <div className={styles.footer} data-testid="palette-hint">
+          {t('palette.hint')}
+        </div>
+      )}
     </>
   );
 }

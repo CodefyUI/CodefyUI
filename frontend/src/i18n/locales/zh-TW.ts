@@ -199,6 +199,8 @@ const zhTW: Record<TranslationKey, string> = {
   'palette.noMatch': '找不到符合的節點',
   'palette.empty': '沒有可用的節點',
   'palette.hint': '拖曳節點到畫布上',
+  'palette.namesOnly': '只顯示名稱',
+  'palette.namesOnly.title': '只顯示節點名稱，不顯示說明那一行',
   'palette.fromPlugin': '來自外掛：{plugin}',
   'palette.fromProjectMods': '來自這個專案的 mods/ 資料夾',
   'palette.fromCustom': '自訂節點，安裝在這台電腦上',
