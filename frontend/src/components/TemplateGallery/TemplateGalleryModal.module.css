@@ -120,7 +120,8 @@
   flex: 1;
   min-width: 0;
   overflow-y: auto;
-  padding: var(--sp-4) var(--sp-5) var(--sp-6);
+  /* 8px 12px 16px (phase 5; was 12px 16px 20px). */
+  padding: var(--sp-3) var(--sp-4) var(--sp-5);
 }
 
 .stateMessage {
@@ -187,8 +188,9 @@
      pinned at a literal 200px is not — which is how all 38 gallery titles
      came to be ellipsized at once. 13rem is 208px at a 16px root and grows
      from there with everything inside it. */
-  grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
-  gap: var(--sp-4);
+  /* 12rem since phase 5, the blank tab's card width; 8px gaps. */
+  grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr));
+  gap: var(--sp-3);
 }
 
 .card {
@@ -196,7 +198,8 @@
   flex-direction: column;
   gap: var(--sp-2);
   min-width: 0;
-  padding: var(--sp-4) var(--sp-4);
+  /* 8px 12px, the blank tab's card padding (phase 5). */
+  padding: var(--sp-3) var(--sp-4);
   text-align: left;
   /* Cards are the primary browsing surface — the "cards, nodes, popovers,
      menus" tier, one step up from the modal's own panel/canvas backdrop. */
@@ -309,13 +312,15 @@
 .detail {
   /* rem for the same reason as .cards: the pane is a column of text at sizes
      that follow the root font, so a literal width narrows as the type grows.
-     18rem is the old 290px at a 16px root. */
-  width: 18rem;
+     18rem is the old 290px at a 16px root.
+     Phase 5: 18vw between 15rem and 18rem, so a 13-inch window's dialog
+     (~1235px) gives the grid ~30px more and a 1080p one is unchanged. */
+  width: clamp(15rem, 18vw, 18rem);
   flex-shrink: 0;
   border-left: 1px solid var(--border-base);
   background: rgba(0, 0, 0, 0.18);
   overflow: hidden;
-  padding: var(--sp-5) var(--sp-5) var(--sp-6);
+  padding: var(--sp-4) var(--sp-4) var(--sp-5);
   display: flex;
   flex-direction: column;
 }

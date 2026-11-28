@@ -14,7 +14,8 @@
 
 /* Panel header */
 .header {
-  padding: var(--sp-4);
+  /* 8px 12px, not 12px all round (phase 5). */
+  padding: var(--sp-3) var(--sp-4);
   flex-shrink: 0;
   background: var(--surface-raised);
   /* border-bottom color is dynamic (accentColor) — set as inline style */
@@ -66,7 +67,7 @@
 .content {
   flex: 1;
   overflow-y: auto;
-  padding: var(--sp-4);
+  padding: var(--sp-3) var(--sp-4);
 }
 
 /* Section headers (PARAMETERS, PORTS, etc.) */
@@ -76,7 +77,7 @@
   color: var(--text-muted);
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  margin-bottom: var(--sp-4);
+  margin-bottom: var(--sp-3);
 }
 
 .sectionHeaderPorts {

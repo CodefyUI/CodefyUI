@@ -27,7 +27,8 @@
   cursor: pointer;
   border-right: 1px solid var(--border-subtle);
   font-size: var(--fs-md);
-  min-width: 80px;
+  /* 72px, not 80 (phase 5): one or two more tabs before the strip scrolls. */
+  min-width: 72px;
   max-width: 180px;
   flex-shrink: 0;
   transition: background var(--transition-fast), color var(--transition-fast);
