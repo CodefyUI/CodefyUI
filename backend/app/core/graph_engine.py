@@ -960,8 +960,9 @@ def expand_subgraphs(
         # Drop the notes inside a block: `drop_notes` runs on the top level
         # only, so a note in a definition expanded as a node to run --
         # "Unknown node type: note", a trigger fanned out to it, a block of
-        # notes alone that did not count as empty. The canvas never writes a
-        # note into a block; an imported or hand-edited file can. Into a copy,
+        # notes alone that did not count as empty. The canvas keeps a note
+        # written inside a block (since phase 4B), and an imported or
+        # hand-edited file can carry one too. Into a copy,
         # because every instance of the block reads this one definition.
         note_ids = {
             inner.id for inner in definition.nodes if inner.type == NOTE_NODE_TYPE

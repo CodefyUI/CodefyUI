@@ -49,7 +49,8 @@ from ..schemas import (
     RunError,
     RunTiming,
 )
-from .routes_graph import GraphAmbiguityError, _graph_path, _sanitize_name
+from ..core.graph_storage import GraphNotFound, GraphStore, GraphUnreadable
+from .routes_graph import GraphAmbiguityError, _sanitize_name
 
 logger = logging.getLogger(__name__)
 
@@ -187,14 +188,12 @@ async def get_contract(name: str):
         # Strict-name rule: never silently alias to a different file.
         raise HTTPException(status_code=404, detail=f"Graph '{name}' not found")
     try:
-        path = _graph_path(name)
+        graph_data = GraphStore.current().read_logic(name, display_name=name)
     except GraphAmbiguityError as e:
         raise HTTPException(status_code=409, detail=str(e))
-    if not path.exists():
+    except GraphNotFound:
         raise HTTPException(status_code=404, detail=f"Graph '{name}' not found")
-    try:
-        graph_data = json.loads(path.read_text())
-    except (ValueError, OSError):
+    except GraphUnreadable:
         raise HTTPException(
             status_code=500, detail=f"Graph '{name}' exists but is not valid JSON"
         )
@@ -675,17 +674,15 @@ async def run_graph_as_function(name: str, request: Request):
                               code="graph_not_found",
                               message=f"Graph '{name}' not found")
     try:
-        path = _graph_path(name)
+        graph_data = GraphStore.current().read_logic(name, display_name=name)
     except GraphAmbiguityError as e:
         return error_response(409, run_id=run_id, graph=name,
                               code="invalid_graph", message=str(e))
-    if not path.exists():
+    except GraphNotFound:
         return error_response(404, run_id=run_id, graph=name,
                               code="graph_not_found",
                               message=f"Graph '{name}' not found")
-    try:
-        graph_data = json.loads(path.read_text())
-    except (ValueError, OSError):
+    except GraphUnreadable:
         return error_response(500, run_id=run_id, graph=name,
                               code="graph_unreadable",
                               message=(

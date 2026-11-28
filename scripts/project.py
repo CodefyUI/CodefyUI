@@ -2,7 +2,7 @@
 scripts/dev.py's _dispatch_project_subcommand hop, so `import app.*` works.
 
 This module mirrors scripts/plugins.py: a build_parser() with subcommands, a
-main(argv) that dispatches to args._func. This file ships `init`, `validate`,
+main(argv) that dispatches to args._func. This file ships `init`, `validate`, `migrate`, `git-setup`,
 `freeze`, `restore`, and `publish`.
 """
 
@@ -45,7 +45,6 @@ from app.core.project import (
     GraphAmbiguityError,
     adopt_graphs,
     check_pin_issues,
-    collect_graph_files,
     init_project_repo,
     scaffold_project,
 )
@@ -115,7 +114,7 @@ def _init_registries_like_server() -> None:
         preset_registry.discover(pdir / "presets", registry)
 
 
-def _validate_one_graph(path: Path, base: str) -> list[str]:
+def _validate_one_graph(store, base: str) -> list[str]:
     """The publish six-gate pre-flight, IN PUBLISH ORDER (routes_apps): secret
     -> contract -> entry -> wiring -> validate. Returns problems (empty=pass)."""
     from app.core import api_contract
@@ -128,10 +127,20 @@ def _validate_one_graph(path: Path, base: str) -> list[str]:
     from app.core.project import FORMAT_VERSION
     from app.core.secret_params import find_secret_violations
 
+    from app.core.graph_storage import GraphStorageError
+
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (ValueError, OSError) as e:
+        if store.storage_of(base) == "dir":
+            data, repairs = store.read_folder(base)
+        else:
+            data, repairs = store.read_logic(base), []
+    except GraphStorageError as e:
         return [f"unreadable: {e}"]
+    if repairs:
+        # A folder that only reads after a repair is a problem to fix (open
+        # it in the editor and save, or fix the files): never passed quietly.
+        return [f"needs_repair: {r.kind} in {r.path}"
+                + (f" ({r.detail})" if r.detail else "") for r in repairs]
     nodes = data.get("nodes", [])
     edges = data.get("edges", [])
     fb = build_preset_fallback(data.get("presets", []))
@@ -262,9 +271,12 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
     _init_registries_like_server()
 
+    from app.core.graph_storage import GraphStore
+
+    store = GraphStore.for_project(proj)
     try:
-        # Shared canonical-vs-legacy collection rule (app.core.project).
-        graphs = collect_graph_files(proj / "graphs")
+        # Shared canonical-vs-legacy collection rule (app.core.graph_storage).
+        graphs = store.stems()
     except GraphAmbiguityError as e:
         err(str(e), str(e))
         return 1
@@ -275,23 +287,26 @@ def cmd_validate(args: argparse.Namespace) -> int:
     # gate into a vacuous pass.
     requested = getattr(args, "graph", None)
     if requested:
-        by_name = dict(graphs)
-        missing = [n for n in requested if n not in by_name]
+        missing = [n for n in requested if n not in graphs]
         if missing:
-            avail = ", ".join(n for n, _ in graphs) or "(none)"
+            avail = ", ".join(graphs) or "(none)"
             err(f"graphs/ 沒有這些 graph：{', '.join(missing)}（現有：{avail}）",
                 f"No such graph in graphs/: {', '.join(missing)} "
                 f"(available: {avail})")
             return 1
         wanted = set(requested)
-        graphs = [(n, p) for n, p in graphs if n in wanted]
+        graphs = [n for n in graphs if n in wanted]
 
     all_ok = True
-    for base, path in graphs:
-        problems = _validate_one_graph(path, base)
+    for base in graphs:
+        problems = _validate_one_graph(store, base)
         if problems:
             all_ok = False
             err(f"FAIL {base}: {problems[0]}", f"FAIL {base}: {problems[0]}")
+            # Every further problem on its own line (a folder graph's
+            # repairs are listed one by one).
+            for more in problems[1:]:
+                err(f"     {base}: {more}", f"     {base}: {more}")
         else:
             ok(f"PASS {base}", f"PASS {base}")
 
@@ -404,6 +419,123 @@ def _render_manifest(manifest: dict, pins: dict) -> str:
         if isinstance(v, dict):
             lines.extend(_render_extra_table(_toml_key(k), v))
     return "\n".join(lines) + "\n"
+
+
+def _set_manifest_graph_format(manifest_path: Path, fmt: str) -> None:
+    """Point ``[storage] graph_format`` at *fmt*, touching nothing else."""
+    import re
+
+    text = manifest_path.read_text(encoding="utf-8")
+    line = f'graph_format = "{fmt}"'
+    if re.search(r"(?m)^\s*graph_format\s*=.*$", text):
+        text = re.sub(r"(?m)^\s*graph_format\s*=.*$", line, text, count=1)
+    elif re.search(r"(?m)^\[storage\]\s*$", text):
+        text = re.sub(r"(?m)^\[storage\]\s*$", f"[storage]\n{line}", text, count=1)
+    else:
+        text = text.rstrip("\n") + f"\n\n[storage]\n{line}\n"
+    manifest_path.write_bytes(text.encode("utf-8"))
+
+
+def cmd_migrate(args: argparse.Namespace) -> int:
+    """Rewrite graphs in the other storage form, verifying each one reads
+    back the same before its old form is removed."""
+    proj = Path(args.dir).expanduser().resolve()
+    to = args.to
+    section(f"轉換專案的圖為 {to}：{proj}", f"Migrating graphs to {to}: {proj}")
+    manifest_path = proj / MANIFEST_FILENAME
+    if not manifest_path.exists():
+        err(f"找不到 manifest：{manifest_path}", f"Manifest not found: {manifest_path}")
+        return 1
+
+    from app.core.graph_storage import GraphAmbiguityError, GraphStorageError, GraphStore
+
+    store = GraphStore.for_project(proj)
+    try:
+        graphs = store.stems()
+    except GraphAmbiguityError as e:
+        err(str(e), str(e))
+        return 1
+    requested = getattr(args, "graph", None)
+    if requested:
+        missing = [n for n in requested if n not in graphs]
+        if missing:
+            err(f"graphs/ 沒有這些 graph：{', '.join(missing)}",
+                f"No such graph in graphs/: {', '.join(missing)}")
+            return 1
+        graphs = [n for n in graphs if n in set(requested)]
+
+    failed = converted = 0
+    for stem in graphs:
+        try:
+            result = store.convert(stem, to)
+        except GraphStorageError as e:
+            failed += 1
+            err(f"未轉換 {stem}：{e}", f"NOT MIGRATED {stem}: {e}")
+            continue
+        if result.status == "converted":
+            converted += 1
+            ok(f"{result.old} → {result.new}", f"{result.old} -> {result.new}")
+        else:
+            ok(f"{stem}：已經是 {to}", f"{stem}: already {to}")
+
+    if not requested and not failed:
+        # The whole project moved, so new graphs follow it.
+        _set_manifest_graph_format(manifest_path, to)
+        ok(f"manifest：[storage] graph_format = \"{to}\"",
+           f"manifest: [storage] graph_format = \"{to}\"")
+    if converted:
+        warn("git 會把轉換看成刪檔加新檔：轉換之後 `git log --follow` 接不到轉換前的歷史。"
+             "要看之前的歷史，用舊路徑查，例如 `git log -- graphs/<name>.graph.json`。"
+             "請把這次轉換單獨 commit。",
+             "git sees the migration as files deleted and files added, so "
+             "`git log --follow` does not reach history from before it. For "
+             "that history ask for the old path, e.g. `git log -- "
+             "graphs/<name>.graph.json`. Commit the migration on its own.")
+    return 1 if failed else 0
+
+
+def cmd_git_setup(args: argparse.Namespace) -> int:
+    """Define the graph merge driver in this repository's ``.git/config``,
+    for merges run in a terminal (the editor defines it per command)."""
+    proj = Path(args.dir).expanduser().resolve()
+    section(f"設定 git 合併：{proj}", f"Setting up git merges: {proj}")
+    if not (proj / MANIFEST_FILENAME).exists():
+        err(f"找不到 manifest：{proj / MANIFEST_FILENAME}",
+            f"Manifest not found: {proj / MANIFEST_FILENAME}")
+        return 1
+    if shutil.which("git") is None:
+        err("找不到 git", "git was not found")
+        return 1
+    from app.core.git.runner import merge_driver_config
+    from app.core.project import PROJECT_GITATTRIBUTES
+
+    inside = subprocess.run(["git", "-C", str(proj), "rev-parse", "--git-dir"],
+                            capture_output=True, text=True)
+    if inside.returncode != 0:
+        err("這個專案不是 git repository", "This project is not a git repository")
+        return 1
+    options = merge_driver_config()
+    for _flag, setting in zip(options[0::2], options[1::2]):
+        key, _, value = setting.partition("=")
+        subprocess.run(["git", "-C", str(proj), "config", "--local", key, value],
+                       check=True)
+        ok(f"{key} = {value}", f"{key} = {value}")
+    # A project made before phase 4B has no `merge=codefyui` lines, and the
+    # driver applies only to the files they name.
+    attributes = proj / ".gitattributes"
+    have = attributes.read_text(encoding="utf-8") if attributes.exists() else ""
+    wanted = [line for line in PROJECT_GITATTRIBUTES.splitlines()
+              if "merge=codefyui" in line and line not in have.splitlines()]
+    if wanted:
+        text = have if have.endswith("\n") or not have else have + "\n"
+        attributes.write_bytes((text + "\n".join(wanted) + "\n").encode("utf-8"))
+        warn(f".gitattributes 加入了 {len(wanted)} 行（merge=codefyui）；請 commit。",
+             f"Added {len(wanted)} line(s) to .gitattributes (merge=codefyui); "
+             "commit them.")
+    info("之後在終端機合併時，圖的線、layout 與索引會依鍵合併。這個設定只在這台機器的這個 clone。",
+         "Merges run in a terminal now merge a graph's wires, layout and index "
+         "by key. The setting lives in this clone on this machine only.")
+    return 0
 
 
 def cmd_freeze(args: argparse.Namespace) -> int:
@@ -658,6 +790,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_val.add_argument("--strict", action="store_true",
                        help="treat missing/mismatched plugin pins as errors")
     p_val.set_defaults(_func=cmd_validate)
+
+    p_mig = sub.add_parser(
+        "migrate", help="Store graphs as folders (dir) or single files (file)")
+    p_mig.add_argument("dir", help="project directory")
+    p_mig.add_argument("--to", choices=("dir", "file"), default="dir",
+                       help="the storage form to convert to (default: dir)")
+    p_mig.add_argument("--graph", action="append", default=None, metavar="NAME",
+                       help="migrate only the named graph (repeatable); without "
+                            "it every graph moves and the manifest's "
+                            "[storage] graph_format is set to match")
+    p_mig.set_defaults(_func=cmd_migrate)
+
+    p_gs = sub.add_parser(
+        "git-setup", help="Define the graph merge driver in this repo's .git/config")
+    p_gs.add_argument("dir", help="project directory")
+    p_gs.set_defaults(_func=cmd_git_setup)
 
     p_freeze = sub.add_parser("freeze", help="Write installed github plugin pins into the manifest")
     p_freeze.add_argument("dir", help="project directory")

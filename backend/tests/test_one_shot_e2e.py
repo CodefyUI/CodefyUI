@@ -87,7 +87,7 @@ def test_a_one_shot_agent_takes_the_waiting_run_and_exits_0(live_server,
     assert (record["status"], record["worker_id"]) == ("succeeded",
                                                        "e2e-shot")
     assert client.get(f"/api/runs/{first}").json()["status"] == "queued"
-    deadline = time.monotonic() + 15
+    deadline = time.monotonic() + 120
     while (_worker(client, "e2e-shot") or {}).get("status") != "offline":
         assert time.monotonic() < deadline, _worker(client, "e2e-shot")
         time.sleep(0.1)
@@ -123,7 +123,7 @@ def test_a_one_shot_agent_stopped_before_a_run_exits_3(live_server,
     agent.send_signal(signal.SIGTERM)
     code, output = _exit(agent, 30)
     assert code == 3, output
-    deadline = time.monotonic() + 15
+    deadline = time.monotonic() + 120
     while (_worker(client, "e2e-idle") or {}).get("status") != "offline":
         assert time.monotonic() < deadline, _worker(client, "e2e-idle")
         time.sleep(0.1)

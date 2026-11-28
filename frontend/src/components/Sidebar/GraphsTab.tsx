@@ -102,14 +102,25 @@ function GraphRow({
   // as something no date can be made of -- a row with no date on it says more
   // than a row with the wrong one.
   const when = graph.modified === undefined ? '' : relativeTime(graph.modified, locale);
-  const meta = when === '' ? '' : t('graphs.modified', { when });
+  // A graph a newer CodefyUI stored in a layout this one cannot read is
+  // listed, so it is not invisible, but its row opens nothing and the meta
+  // line says why. Delete stays: it removes the folder without reading it.
+  const newer = graph.newer === true;
+  const broken = typeof graph.error === 'string' && graph.error !== '';
+  const meta = newer
+    ? t('graphs.newerStorage')
+    : broken
+      ? t('graphs.cannotOpen')
+      : when === '' ? '' : t('graphs.modified', { when });
   const open = t('graphs.open');
 
   // Two items, and neither of them is another way to open the graph: the row
   // itself is the only door in, so the menu holds what is left -- the two
   // things that change the FILE rather than what is on screen.
   const items: ActionMenuItem[] = [
-    { id: 'rename', label: t('graphs.rename'), onSelect: () => onRename(graph) },
+    ...(newer || broken
+      ? []
+      : [{ id: 'rename', label: t('graphs.rename'), onSelect: () => onRename(graph) }]),
     {
       id: 'delete',
       label: t('graphs.delete'),
@@ -129,7 +140,14 @@ function GraphRow({
     // open over the menu or the padding beside it. A newline rather than a
     // separator between the two clauses, which are punctuated in their own
     // languages already.
-    <li className={tabStyles.row} title={meta === '' ? graph.name : `${graph.name}\n${meta}`}>
+    // A graph that cannot be opened says why in its tooltip: the server's
+    // sentence names the files and what to do about them.
+    <li
+      className={tabStyles.row}
+      title={broken
+        ? `${graph.name}\n${graph.error}`
+        : meta === '' ? graph.name : `${graph.name}\n${meta}`}
+    >
       <button
         type="button"
         className={tabStyles.rowOpen}
@@ -139,6 +157,7 @@ function GraphRow({
         // as part of that name.
         aria-label={`${open} ${graph.name}`}
         aria-describedby={describedBy === '' ? undefined : describedBy}
+        disabled={newer || broken}
         onClick={() => onOpen(graph)}
       >
         <span className={tabStyles.rowName}>{graph.name}</span>

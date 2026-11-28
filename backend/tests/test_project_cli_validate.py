@@ -354,3 +354,22 @@ def test_strict_pin_sha_mismatch(tmp_path, monkeypatch, capsys):
     assert "pack-a" in out
     assert "restore" in out
     assert project.cmd_validate(_vargs(proj, strict=True)) == 1   # strict error
+
+
+def test_a_folder_graph_passes_and_a_repaired_one_fails(tmp_path, capsys):
+    """Phase 4B: validate reads a folder graph, and a folder that only reads
+    after a repair fails, listing every repair."""
+    from app.core.graph_storage import GraphStore
+
+    proj = _init(tmp_path)
+    GraphStore.for_project(proj).write("echo", _echo_graph())
+    assert (proj / "graphs" / "echo" / "index.json").is_file()
+    assert project.cmd_validate(_vargs(proj)) == 0
+    (proj / "graphs" / "echo" / "nodes" / "gi.json").unlink()
+    (proj / "graphs" / "echo" / "nodes" / "bad.json").write_text("{")
+    capsys.readouterr()
+    assert project.cmd_validate(_vargs(proj)) == 1
+    out = capsys.readouterr()
+    text = out.out + out.err
+    assert "edge_missing_node" in text
+    assert "unreadable_file" in text and "bad.json" in text

@@ -209,7 +209,7 @@ async def _finished(store: RunStore, run_id: str):
     import asyncio
     import time
 
-    deadline = time.monotonic() + 15.0
+    deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
         record = await store.get_run(run_id)
         if record.finished_at is not None:

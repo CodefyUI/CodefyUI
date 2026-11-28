@@ -4552,6 +4552,35 @@ def _api_request(url: str, host: str, *, token: "str | None" = None,
         return 0, None
 
 
+def _is_graph_folder(path: Path) -> bool:
+    """A project graph saved as a folder (phase 4B), named by the folder or
+    by its index.json. Checked without the backend: whether to hop into the
+    venv depends on it."""
+    if path.is_dir():
+        return (path / "index.json").is_file()
+    if path.name == "index.json" and path.is_file():
+        try:
+            return "storage_version" in json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            return False
+    return False
+
+
+def _read_run_graph(path: Path) -> dict:
+    """The graph `cdui run` submits: a JSON file as it is, or a graph folder
+    read through the backend's storage layer (which needs the venv)."""
+    if _is_graph_folder(path):
+        from app.core.graph_storage import load_graph_document  # noqa: PLC0415
+
+        repairs: list = []
+        graph = load_graph_document(path, repairs)
+        for repair in repairs:
+            warn(f"讀取時修復：{repair.path}：{repair.detail}",
+                 f"repaired while reading {repair.path}: {repair.detail}")
+        return graph
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def _run_submit_body(args) -> dict:
     """The POST /api/runs envelope for parsed args. Pure — hence testable.
 
@@ -4560,7 +4589,7 @@ def _run_submit_body(args) -> dict:
     opinion about. ``interactive`` is the canvas's, and carries process-local
     state a CLI has none of.
     """
-    graph = json.loads(Path(args.graph).read_text(encoding="utf-8"))
+    graph = _read_run_graph(Path(args.graph))
     options = {"record_outputs": bool(getattr(args, "record_outputs", False))}
     # Omitted means the server applies the graph file's settings.device,
     # else cpu; the CLI does not repeat that rule locally.
@@ -4875,7 +4904,10 @@ def run_graph() -> None:
     _apply_dev_env()
 
     path = Path(args.graph)
-    if not path.is_file():
+    if _is_graph_folder(path):
+        # Reading a graph folder needs the backend package.
+        _exec_into_venv_if_available()
+    elif not path.is_file():
         err(f"找不到圖檔：{path}", f"no such graph file: {path}")
         sys.exit(1)
     try:

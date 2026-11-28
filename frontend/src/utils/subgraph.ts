@@ -690,6 +690,32 @@ function serializeInnerNode(
   };
 }
 
+function serializeInnerNote(
+  note: Node<NodeData>,
+  offsetX: number,
+  offsetY: number,
+): any {
+  const round = (v: unknown) => (typeof v === 'number' ? Math.round(v) : v);
+  const offset = note.data.boundOffset;
+  return {
+    id: note.id,
+    type: 'note',
+    position: {
+      x: Math.round(note.position.x - offsetX),
+      y: Math.round(note.position.y - offsetY),
+    },
+    data: {
+      noteKind: note.data.noteKind,
+      noteContent: note.data.noteContent,
+      noteColor: note.data.noteColor,
+      boundToNodeId: note.data.boundToNodeId ?? null,
+      boundOffset: offset ? { x: Math.round(offset.x), y: Math.round(offset.y) } : null,
+      noteWidth: round(note.data.noteWidth),
+      noteHeight: round(note.data.noteHeight),
+    },
+  };
+}
+
 function serializeInnerEdge(edge: Edge): any {
   return {
     id: edge.id,
@@ -980,9 +1006,18 @@ export function definitionFromCanvas(
   const minX = real.length ? Math.min(...real.map((n) => n.position.x)) : 0;
   const minY = real.length ? Math.min(...real.map((n) => n.position.y)) : 0;
   const keepPort = (p: SubgraphPort) => alive.has(p.innerNode);
+  // Notes written inside the block are kept, in the form the top level
+  // writes them (`type: "note"`), which `resolveSerializedNodes` reads back
+  // on the next visit. Leaving them out lost them on every exit (phase 4B).
+  // They neither own ports nor move the block's origin; the server drops
+  // them before a run, as it does at the top level.
+  const notes = nodes.filter((n) => n.type === 'noteNode');
   return {
     ...definition,
-    nodes: real.map((n) => serializeInnerNode(n, minX, minY)),
+    nodes: [
+      ...real.map((n) => serializeInnerNode(n, minX, minY)),
+      ...notes.map((n) => serializeInnerNote(n, minX, minY)),
+    ],
     edges: edges
       .filter((e) => alive.has(e.source) && alive.has(e.target))
       .map(serializeInnerEdge),

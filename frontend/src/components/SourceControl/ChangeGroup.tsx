@@ -6,6 +6,8 @@ import { useI18n, type TranslationKey } from '../../i18n';
 import { confirm } from '../../utils/dialog';
 import { ChevronDownIcon, DiscardIcon, MinusIcon, PlusIcon } from '../shared/Icons';
 import { FileRow, type ChangeGroupKind } from './FileRow';
+import { GraphFolderRow } from './GraphFolderRow';
+import { groupChanges } from '../../utils/graphFolders';
 import { focusScmFallback } from './ScmHeader';
 import styles from './SourceControl.module.css';
 
@@ -161,24 +163,40 @@ export function ChangeGroup({ kind, files }: ChangeGroupProps) {
       {/* `role="list"` is spelled out because `list-style: none` takes the
           list semantics away from a `<ul>` in Safari. */}
       <ul id={listId} className={styles.list} role="list" hidden={!open}>
-        {files.map((file) => (
-          <FileRow
-            // One path can be in the status twice with the same two letters
-            // and a different kind, so the kind is part of the identity.
-            key={`${file.path}:${file.xy}:${file.kind}`}
-            file={file}
-            group={kind}
-            onActed={returnFocus}
-            // The scope is the GROUP's, and that is not a detail: one path can
-            // be staged AND changed at once, as two rows in two lists, and
-            // they show two different pairs of sides. Staged is HEAD against
-            // the index; changed is the index against the file on disk.
-            onOpen={(one) => openGitDiff({
-              path: one.path,
-              scope: kind === 'staged' ? 'index' : 'worktree',
-            })}
-          />
-        ))}
+        {/* A graph stored as a folder is ONE row (phase 4B); every other
+            file is its own. The scope is the GROUP's, and that is not a
+            detail: one path can be staged AND changed at once, as two rows in
+            two lists, and they show two different pairs of sides. Staged is
+            HEAD against the index; changed is the index against the disk. */}
+        {groupChanges(files).map((item) => {
+          const onOpen = (one: GitFile) => openGitDiff({
+            path: one.path,
+            scope: kind === 'staged' ? 'index' : 'worktree',
+          });
+          return item.type === 'graph'
+            ? (
+              <GraphFolderRow
+                key={`graph:${item.name}`}
+                name={item.name}
+                files={item.files}
+                group={kind}
+                onActed={returnFocus}
+                onOpen={onOpen}
+              />
+            )
+            : (
+              <FileRow
+                // One path can be in the status twice with the same two
+                // letters and a different kind, so the kind is part of the
+                // identity.
+                key={`${item.file.path}:${item.file.xy}:${item.file.kind}`}
+                file={item.file}
+                group={kind}
+                onActed={returnFocus}
+                onOpen={onOpen}
+              />
+            );
+        })}
       </ul>
     </section>
   );

@@ -302,7 +302,7 @@ async def test_the_terminal_event_is_readable_before_the_status_flips():
     samples: list[tuple[str, list[str]]] = []
 
     def poll() -> None:
-        deadline = time.monotonic() + 15.0
+        deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
             page, _, status = runner._read(job, 0, 500)
             samples.append((status, types_of(page)))

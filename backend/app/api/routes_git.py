@@ -5,6 +5,7 @@
     GET    /api/git/commits/{sha}/files    what one commit changed
     GET    /api/git/diff                   the patch for one file
     GET    /api/git/file                   one file's content at one ref
+    GET    /api/git/graph                  one saved graph's logic at one ref
     GET    /api/git/config                 who commits here, and from where
     GET    /api/git/branches               every branch, local and remote
     GET    /api/git/remotes                every remote, and its two URLs
@@ -300,6 +301,15 @@ async def read_file(request: Request, path: str, ref: str) -> FileAtRef:
     anyway would make that promise worthless.
     """
     return await _answer(_service(request).file_at_ref(path, ref))
+
+
+@router.get("/graph")
+async def read_graph(request: Request, name: str, ref: str) -> dict:
+    """Saved graph *name* as its logic document at ``worktree``, ``index``,
+    ``HEAD`` or a sha -- a single file or a folder alike, read without a
+    checkout. The Source Control tab compares two of these to summarise
+    what changed in a graph."""
+    return await _answer(_service(request).graph_at_ref(name, ref))
 
 
 @router.get("/config")

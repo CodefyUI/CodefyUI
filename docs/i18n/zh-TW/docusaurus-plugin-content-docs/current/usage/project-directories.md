@@ -15,6 +15,7 @@ git commit。
 my-service/
   codefyui.project.toml   manifest: name, plugin pins, default publish target
   graphs/    <name>.graph.json    logic (nodes/edges/params/presets/subgraphs, optional settings.device / settings.seed)
+             <name>/              or the same graph as a folder (see "Graphs stored as folders")
   layout/    <name>.layout.json   positions, note geometry, segments (reviewable, generated)
   assets/images/   assets/models/   assets/data/    scaffolded empty
   assets/output/                                    created on demand (e.g. ImageWriter)
@@ -42,7 +43,7 @@ cd my-service
 
 `init` 會建立 `graphs/`、`layout/` 與 `assets/{images,models,data}/`（空目錄，以 `.gitkeep` 追蹤），寫入 `codefyui.project.toml` / `.gitignore` / `.gitattributes` / `.env.example` / `README.md`，並執行 `git init`。它不會建立 commit，而會印出後續步驟。`--force` 允許寫入非空目錄，但這五個檔案若已存在都不會被覆寫。`assets/output/` 不會預先建立；節點（例如 ImageWriter）第一次寫入時才會出現。
 
-`.gitattributes` 有兩行。`*.json text eol=lf` 讓 graph 與 layout 檔在 checkout 時維持 LF：伺服器以 LF 寫出這些檔案，若 Windows 上設定了 `core.autocrlf=true`，git 會把它們以 CRLF 交回，每次存檔都會改寫每一行。`layout/*.layout.json linguist-generated=true` 會讓 layout 檔在 GitHub diff 中收合。2.6.0 之前建立的專案會保留舊的 `.gitattributes`，其中沒有第一行；請自行加入 `*.json text eol=lf`。
+`.gitattributes` 有四行與換行及 diff 有關，另有三行 `merge=codefyui`（這些與 `*.jsonl`、`graphs/**/nodes/*` 兩行見[以資料夾儲存的圖](#graphs-stored-as-folders)）。`*.json text eol=lf` 讓 graph 與 layout 檔在 checkout 時維持 LF：伺服器以 LF 寫出這些檔案，若 Windows 上設定了 `core.autocrlf=true`，git 會把它們以 CRLF 交回，每次存檔都會改寫每一行。`layout/*.layout.json linguist-generated=true` 會讓 layout 檔在 GitHub diff 中收合。2.6.0 之前建立的專案會保留舊的 `.gitattributes`，其中沒有第一行；請自行加入 `*.json text eol=lf`。
 
 ### 2. 加入一個 graph {/* #2-add-a-graph */}
 
@@ -243,6 +244,67 @@ curl -s http://127.0.0.1:8000/api/apps/echo-svc/versions \
 
 作用中版本的 `GET /api/apps/echo-svc/openapi.json` 的 `info` 區塊也帶有
 `x-codefyui-git-commit` 與 `x-codefyui-git-dirty`。
+
+## 以資料夾儲存的圖 {/* #graphs-stored-as-folders */}
+
+manifest 裡寫了
+
+```toml
+[storage]
+graph_format = "dir"
+```
+
+的專案，會把每張**新**圖存成一個資料夾，而不是單一檔案。伺服器建立的專案與 `cdui project init` 都會寫這個設定；沒有這個鍵的專案繼續存成單一檔案。既有的圖維持它在磁碟上的格式，直到執行 `cdui project migrate`。
+
+```
+graphs/<name>/
+  index.json                  storage_version 2、format_version、name、description、settings、requires
+  nodes/<node>.json           每個節點一個檔：{id, type, o, data}
+  nodes/<node>.code.py        長文字參數（含換行且超過 400 字元）
+  edges.jsonl                 每行一條線，依 (source, sourceHandle, target, targetHandle) 排序
+  subgraphs/<block>/          區塊定義，結構相同，介面寫在它的 index.json
+  presets/<preset>.json       每個內嵌 preset 一個檔
+layout/<name>.layout.json     不變：位置、note 幾何、segment
+```
+
+- **改一處，寫一個檔。** 改一個參數只會改寫那個節點的檔；新增節點會新增它的檔並更新 layout 檔；沒有變更的存檔不寫任何檔。1,000 個節點的圖存檔遠低於一秒。
+- **順序。** 每個節點檔與每行線都有整數 `o`。新項目取最大值加 1024，移到兩者之間的項目取中點，只有在間隔用完時（同一位置連續插入十次之後）才全部重新編號。手寫、沒有 `o` 的節點檔排在最後。
+- **檔名只是提示。** 檔名由節點 id 清理成各檔案系統都接受的名稱；需要清理、會與另一個只差大小寫的名稱相撞、或是 Windows 保留名稱時，會加上 id 的短雜湊。以檔案內的 `id` 為準。
+- **長文字**移到自己的檔（參數名為 `code`、`script` 或以 `_code` 結尾用 `.py`，其餘 `.txt`），程式碼的修改就會顯示成逐行差異。文字跨過 400 字元時會在檔內與檔外之間移動。含 Windows 換行的文字留在節點檔裡。
+- `index.json` 裡的 **`requires`** 列出這張圖用到的插件節點型別（依插件 id）與自訂節點型別，不含版本；釘版本仍是 manifest `[plugins]` 的事。這台機器不認得的型別會保留上次存檔寫下的那一筆。
+- **存檔不會遺失資料。** 寫入前，伺服器會確認要寫的檔讀回來與正在存的圖完全相同；不相同就什麼都不寫（HTTP 500）。寫入順序是新的與有變的檔、`edges.jsonl`、`index.json`，最後才刪除多餘的檔。你放進資料夾的其他檔不會被動到。
+- **修復不會悄悄存回去。** 資料夾需要修復才能讀時（線接到檔案已不見的節點、重複的線、兩個檔宣告同一個 id、文字檔不見、節點檔不是合法 JSON、不是 UTF-8 的位元組、symbolic link、沒有完成的存檔），編輯器會顯示一次「修復了 N 處」，分頁標示為未存檔；只有存檔時修復後的圖才會寫回。`cdui project validate` 會失敗並列出每一項修復。`index.json` 不存在或讀不了是錯誤，不是修復。
+- 由較新版 CodefyUI 寫的資料夾（較高的 `storage_version`）會列在 Graphs 面板，但不能開啟、改名或覆寫。同名的資料夾與單一檔案並存（例如 checkout 了舊 commit）會被拒絕，訊息會列出兩者；刪掉不要的那一個。無法開啟的圖仍會留在 Graphs 面板，顯示為灰色，原因在 tooltip。
+- **存檔進行中**，資料夾裡會有 `.saving` 標記（已列入 gitignore）；沒有完成的存檔（當機、斷電）會留下它，下次開啟時會說明資料夾可能混合了兩個版本。
+- **不跟著 symbolic link 走。** 圖資料夾裡的 link 一律略過並回報；圖檔、圖資料夾或 layout 檔本身是指到專案外的 link 時拒絕開啟。
+- **大小。** 圖資料夾裡單一檔案最多 16 MB；超過時整張圖拒絕開啟，而不是略過那個檔。
+- **名稱。** 圖名最多 100 字元。Windows 保留名稱（`CON`、`aux`、`LPT1`……）存檔時會加上結尾的 `_`，讓專案能在 Windows 上 checkout；先前以這種名稱存的圖維持原名。
+
+新專案的 `.gitattributes` 也讓 `*.jsonl` 與 `graphs/**/nodes/*` 維持 LF。
+
+### 轉換格式 {/* #migrating */}
+
+```bash
+cdui project migrate my-service            # 所有圖轉成資料夾
+cdui project migrate my-service --to file  # 轉回單一檔案
+cdui project migrate my-service --graph echo
+```
+
+每張圖以新格式寫出後再讀回；只有讀回的圖（logic 與 layout）相同時才刪除舊格式，任何失敗都會讓舊格式原封不動。轉換整個專案時也會設定 `[storage] graph_format`。需要修復的資料夾，或含有資料夾無法保留的線（接到不存在節點的線、同一對連接埠之間的第二條線）的圖會被拒絕：在編輯器中開啟並存檔一次即可。git 會把轉換看成刪檔加新檔，所以 `git log --follow` 看不到轉換前的歷史；請改用舊路徑查（`git log -- graphs/<name>.graph.json`），並把轉換單獨 commit。
+
+### 合併 {/* #merging */}
+
+新專案的 `.gitattributes` 把 `edges.jsonl`、`index.json` 與 layout 檔標為 `merge=codefyui`：它們**依鍵**合併，而不是逐行。兩個分支各自新增節點與線，或一個刪線、另一個在旁邊加線，都能乾淨合併；只有兩邊對同一條線、同一個位置或同一個索引項目做了不同的修改才會留下衝突，此時寫入的是 git 一般的衝突標記。資料夾形式的圖，layout 依節點 id 排序，所以即使一般的逐行合併衝突也比較少。
+
+從 Source Control 執行的合併（pull、stash pop、帶著變更切換分支）會自動使用這個合併方式。在終端機合併時，每個 clone 設定一次：
+
+```bash
+cdui project git-setup my-service
+```
+
+它會把合併 driver 寫進這個 repository 的 `.git/config`（較舊的專案也會在 `.gitattributes` 加上 `merge=codefyui` 那幾行）。沒有設定時，git 對這些檔使用一般的逐行合併：衝突會多一些，但不會合併錯。
+
+在 Source Control 裡，資料夾形式的圖是一列，附上這張圖改了什麼的摘要；展開可看各個檔。對這一列暫存、取消暫存與捨棄，會作用在整個資料夾與它的 layout 檔。
 
 ## 預設專案與切換專案 {/* #the-default-project-and-switching-projects */}
 

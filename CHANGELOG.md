@@ -24,6 +24,10 @@ received — each links to the release it was published as.
 
 ### Added
 
+- **Graphs stored as folders (storage v2).** In a project whose manifest has `[storage] graph_format = "dir"` (new projects from the server and `cdui project init`), a new graph is saved as `graphs/<name>/`: `index.json`, one file per node, long text parameters such as code as their own `.py`/`.txt` files, `edges.jsonl`, and a folder per block. Editing one parameter rewrites one file and a save that changed nothing writes nothing. A save is checked in memory before any file is written and refused (500) if the files would not read back as the graph. Repairs needed to read a folder are shown once in the editor and never saved without you; `cdui project validate` lists them and fails. Existing graphs keep their form. See `docs/docs/usage/project-directories.md#graphs-stored-as-folders`.
+- **`cdui project migrate`** converts a project's graphs between single files and folders, verifying each one before removing its old form.
+- **Graphs merge by key.** A new project's `.gitattributes` marks a folder graph's `edges.jsonl`, `index.json` and the layout files `merge=codefyui`; Source Control's merges use a three-way merge by wire, node id and index key, so two branches that each add nodes and wires merge cleanly. `cdui project git-setup` sets the same up for merges run in a terminal. Anything the merge does not understand, and every real conflict, falls back to git's line merge.
+- **`GET /api/git/graph`** returns a saved graph's logic at the working tree, the index, `HEAD` or a commit, for single files and folders alike. Source Control shows a folder graph as one row with a summary of what changed, and stages, unstages or discards the whole folder with its layout file.
 - **A default project.** A fresh install (no project named, no `CODEFYUI_GRAPHS_DIR`, no graphs in `backend/data/graphs`) opens `~/CodefyUI-Projects/workspace`, created the first time with its own git repository on `main` (or your `init.defaultBranch`) and one commit, `Initial project`, holding the starter files. `CODEFYUI_PROJECTS_ROOT` moves the folder; `CODEFYUI_DEFAULT_PROJECT=0` turns it off. The last open project is reopened at the next start (`<user data>/projects.json`). See `docs/docs/usage/project-directories.md#the-default-project-and-switching-projects`.
 - **Switching projects in the editor.** The toolbar's project chip shows the open project, its git branch and a dot for uncommitted changes (below 1600px wide, the name alone, with the branch in its tooltip and the first row of its menu, and **Reload Nodes** moves from the toolbar into the **File** menu, so the toolbar stays one line), and opens a recent project, a folder, a new project or an https clone. A new project, like the default one, starts on `main` with an `Initial project` commit; a project name is checked as you type. Refusals the server words with only a path (`not_a_project` and the like) are shown in the page's language. Switching reloads the page; each project keeps its own tabs. A switch is refused, with the reason, while runs are running or queued, a study runs, an install runs, a git operation runs or a connected worker declares this server's mount label with its own folder. A window left on the old project notices when you return to it and offers to reload, and a write from it is refused (409 `project_changed`, from the new `X-CodefyUI-Project` header; requests without the header, such as the CLI's, are unaffected).
 - **`/api/projects`**: `GET`, `POST open`, `create`, `clone`, `trust`, `import` (`GET` and `POST`), `DELETE recent` and `GET browse` (loopback only). See `docs/docs/advanced/api-reference.md#projects`.
@@ -45,6 +49,14 @@ received — each links to the release it was published as.
 - **`GET /api/examples/list` is sorted by main tag, `order` and name** instead of by path, and each entry adds `main_tag` and `tags`. `section` is deprecated: it is still served, equal to `main_tag`, and a file that sets only `section` is still read through it, so third-party plugin examples keep working unchanged.
 - **The examples of the built-in plugin packs are listed under Courses**, one sub-heading per pack. A plugin example that declares a main tag is listed under it; one that declares none is under Plugin packs.
 - **Example cards show up to two tags** (and `+n`) instead of the example's folder.
+
+### Fixed
+
+- Reconnecting one end of a wire no longer moves the wire to the end of the graph's edge list, which changed the saved order of every wire after it.
+- A note added while inside a block is no longer lost when you leave the block (or save while inside it).
+- A graph that cannot be read, or that exists both as a folder and as a single file, no longer empties the Graphs panel: it is listed, greyed out, with the reason. Opening it answers 422 instead of 500.
+- A graph name longer than 100 characters is refused with 400 instead of failing with 500; Windows reserved names (`CON`, `aux`...) are saved with a trailing `_`.
+- Renaming a graph to the same name in another letter case works on macOS and Windows.
 
 ## [3.3.0] — 2026-11-27
 

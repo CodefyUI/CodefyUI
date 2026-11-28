@@ -1059,13 +1059,16 @@ const alwaysRefresh = (): boolean => true;
  *
  * One save writes a PAIR -- `graphs/<name>.graph.json` and
  * `layout/<name>.layout.json` -- and `graphs/<name>.json` is the older
- * single-file spelling still on some disks. All three reduce to the stem,
+ * single-file spelling still on some disks. A graph stored as a folder
+ * writes files under `graphs/<name>/`, and any of them is that graph. All three reduce to the stem,
  * which is what `TabState.currentGraphFile` holds. Order matters: the
  * `.graph.json` pattern is tried first, or `foo.graph.json` would reduce to
  * `foo.graph` under the legacy one.
  */
 function graphBaseName(path: string): string | null {
   const patterns = [
+    // A graph stored as a folder (storage v2): every file under it.
+    /^graphs\/([^/]+)\/.+$/,
     /^graphs\/([^/]+)\.graph\.json$/,
     /^layout\/([^/]+)\.layout\.json$/,
     /^graphs\/([^/]+)\.json$/,

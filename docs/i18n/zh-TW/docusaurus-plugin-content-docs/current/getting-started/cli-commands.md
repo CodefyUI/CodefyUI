@@ -99,6 +99,8 @@ cdui packs install sentence-embeddings --from /media/usb/sentence-embeddings
 |------|------|
 | `cdui project init <dir>` | 建立 `graphs/`、`layout/`、`assets/images/`、`assets/models/`、`assets/data/`、manifest `codefyui.project.toml`、`.gitignore`、`.gitattributes`、`.env.example` 與 `README.md`，再執行 `git init`，但不建立 commit。上述檔案若已存在，一律不會被覆寫。[專案目錄](/usage/project-directories#1-create-the-project)說明 `.gitattributes` 的內容，以及 2.6.0 之前建立的專案必須自行補上的那一行。非空目錄需要加上 `--force` 或 `--adopt`。`--adopt <old-graphs-dir>` 會複製扁平 graphs 目錄中的每個 `*.json`，並把它拆成 logic 與 layout；目標中已有同名的 graph 或 layout 檔時會被取代。 |
 | `cdui project validate <dir>` | 載入完整的節點 registry，並對 `graphs/` 下的每個 graph 執行發佈時的檢查；兩者的差異請參閱[專案目錄](/usage/project-directories#4-validate-the-ci-gate)。如果 git 已追蹤 `.env`，此指令也會失敗。重複使用 `--graph <name>` 可指定要檢查的 graph。`--strict` 會將缺少 plugin pin 的警告視為錯誤。 |
+| `cdui project migrate <dir>` | 把專案的圖存成資料夾（`--to dir`，預設）或單一檔案（`--to file`）。每張圖讀回比對無誤才刪除舊格式；任何失敗都保持原樣。重複 `--graph <name>` 只轉換這些圖；不指定時也會設定 manifest 的 `[storage] graph_format`。見[以資料夾儲存的圖](/usage/project-directories#migrating)。 |
+| `cdui project git-setup <dir>` | 把圖的合併 driver 寫進 repository 的 `.git/config`，讓在終端機執行的合併依鍵合併圖的線、layout 與索引（Source Control 會自己處理）。較舊的專案會在 `.gitattributes` 加上 `merge=codefyui` 那幾行。見[合併](/usage/project-directories#merging)。 |
 | `cdui project freeze <dir>` | 將每個已安裝 GitHub plugin 的確切 commit SHA 寫入 manifest 的 `[plugins]` 表。連結的本機 plugin 會被略過。 |
 | `cdui project restore <dir>` | 依 manifest 記錄的確切 SHA 安裝 plugin pin。在 CI 中，請先執行此指令再執行 `validate`。 |
 | `cdui project publish <dir>` | 將 graph 發佈到本機伺服器（`127.0.0.1` 上的 `CODEFYUI_PORT`，預設 `8000`），並在版本上記錄 git commit。`--graph` / `--slug` 可覆蓋 manifest 的 `[publish]` 目標；`--note` 加上一則不可變更的版本註記；`--create` 允許首次發佈到伺服器尚未認得的 `--slug`。 |

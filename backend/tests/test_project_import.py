@@ -95,7 +95,8 @@ async def test_import_into_a_new_project_copies_and_opens_it(http, flat):
                                       "media/clip.wav", "models/weights.pt"]
     assert (target / "assets" / "models" / "weights.pt").read_bytes() == b"w" * 1000
     assert not (target / "assets" / "models" / "unused.pt").exists()
-    assert (target / "graphs" / "train.graph.json").is_file()
+    # The new project is a "dir" project, so the flat graphs became folders.
+    assert (target / "graphs" / "train" / "index.json").is_file()
     assert settings.PROJECT_DIR == target
     assert projects.env_trust_state(target) in ("none", "trusted")
     # Nothing in the flat folder moved or changed.

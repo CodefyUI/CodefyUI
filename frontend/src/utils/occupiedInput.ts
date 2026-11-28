@@ -50,3 +50,30 @@ export function withoutOccupants(
   const occupants = new Set(occupantsOf(edges, wire, ignoreId).map((e) => e.id));
   return occupants.size === 0 ? [...edges] : edges.filter((e) => !occupants.has(e.id));
 }
+
+/**
+ * `edges` with the wire `moved` reattached to `wire`'s ends, IN PLACE.
+ *
+ * The moved wire keeps its position in the list (and its id and data), and
+ * any wire already feeding the input it lands on goes in the same step
+ * (#562). In place because the list order is what a saved graph stores: a
+ * reconnect that re-appended the wire made one moved end rewrite the order
+ * of every wire after it (phase 4B).
+ */
+export function reconnectedEdges(
+  edges: readonly Edge[],
+  moved: Edge,
+  wire: WireEnds,
+): Edge[] {
+  return withoutOccupants(edges, wire, moved.id).map((e) =>
+    e.id === moved.id
+      ? {
+          ...moved,
+          source: wire.source ?? moved.source,
+          target: wire.target ?? moved.target,
+          sourceHandle: wire.sourceHandle ?? undefined,
+          targetHandle: wire.targetHandle ?? undefined,
+        }
+      : e,
+  );
+}

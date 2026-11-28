@@ -257,6 +257,31 @@ describe('reloadTabFromDisk', () => {
     expect(tabs()[0].readOnly).toBe(true);
   });
 
+  it('says once that a folder graph was repaired, and leaves the tab unsaved', async () => {
+    const tabId = tabs()[0].id;
+    mockFetch(200, {
+      nodes: [raw('a')],
+      edges: [],
+      storage_repairs: [
+        { kind: 'edge_missing_node', path: 'edges.jsonl', detail: '' },
+        { kind: 'duplicate_id', path: 'nodes/a-1.json', detail: '' },
+      ],
+    });
+    await reloadTabFromDisk(tabId, 'alpha');
+    const toasts = useToastStore.getState().toasts;
+    expect(toasts).toHaveLength(1);
+    expect(toasts[0].message).toContain('Repaired 2 thing(s)');
+    expect(tabs()[0].savedRevision).toBeNull();
+  });
+
+  it('says nothing and records the match when nothing was repaired', async () => {
+    const tabId = tabs()[0].id;
+    mockFetch(200, { nodes: [raw('a')], edges: [] });
+    await reloadTabFromDisk(tabId, 'alpha');
+    expect(useToastStore.getState().toasts).toHaveLength(0);
+    expect(tabs()[0].savedRevision).toBe(tabs()[0].revision);
+  });
+
   it('is a no-op for a tab that was closed before the reload was accepted', async () => {
     mockFetch(200, { nodes: [raw('fromDisk')], edges: [] });
     await expect(reloadTabFromDisk('gone', 'alpha')).resolves.toBe(false);

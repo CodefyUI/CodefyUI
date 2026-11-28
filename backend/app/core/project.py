@@ -54,6 +54,8 @@ __pycache__/
 .DS_Store
 # interrupted atomic writes
 *.tmp-*
+# a graph folder save in progress (or one that did not finish)
+graphs/**/.saving
 """
 
 #: The ``.gitattributes`` a project directory starts with.
@@ -66,7 +68,17 @@ __pycache__/
 #: would show the whole graph. ``linguist-generated`` keeps the layout half
 #: of the pair collapsed in a GitHub diff, where it is noise.
 PROJECT_GITATTRIBUTES = """*.json text eol=lf
+*.jsonl text eol=lf
+graphs/**/nodes/* text eol=lf
 layout/*.layout.json linguist-generated=true
+# A graph's wires, layout and index merge by key, not by line: two branches
+# that each add a wire or a node merge cleanly. The editor's Source Control
+# defines the driver itself; for a terminal run `cdui project git-setup`.
+# Without it git falls back to its line merge (more conflicts, never a
+# wrong merge).
+graphs/**/edges.jsonl merge=codefyui
+graphs/**/index.json merge=codefyui
+layout/*.layout.json merge=codefyui
 """
 
 # Note-node data keys that are canvas GEOMETRY (spec 6.2): extracted into the
@@ -83,6 +95,12 @@ _PROJECT_TOML = """[project]
 name = "{name}"
 format_version = 1
 requires_codefyui = ">=1.4"   # advisory metadata; NOT enforced
+
+[storage]
+# "dir": each new graph is a folder (graphs/<name>/), one file per node, so
+# two branches that change different nodes merge cleanly. Existing graphs keep
+# their form until `cdui project migrate`.
+graph_format = "dir"
 
 [plugins]
 # written by `cdui project freeze`; installed by `cdui project restore`
@@ -307,9 +325,13 @@ def adopt_graphs(src: Path, target: Path, *,
     pairs = collect_graph_files(src)
     adopted: list[str] = []
     skipped: list[tuple[str, str]] = []
+    from .graph_storage import GraphStore
+
+    store = GraphStore.for_project(target)
     for base, path in pairs:
         if keep_existing and ((graphs_dir / f"{base}.graph.json").exists()
-                              or (graphs_dir / f"{base}.json").exists()):
+                              or (graphs_dir / f"{base}.json").exists()
+                              or (graphs_dir / base).is_dir()):
             skipped.append((path.name, "the project already has a graph "
                                        "with this name"))
             continue
@@ -318,8 +340,12 @@ def adopt_graphs(src: Path, target: Path, *,
         except (ValueError, OSError) as exc:
             skipped.append((path.name, str(exc)))
             continue
-        write_graph_pair(graphs_dir / f"{base}.graph.json",
-                         layout_dir / f"{base}.layout.json", payload)
+        if store.new_graph_format == "dir" and store.storage_of(base) != "file":
+            # A "dir" project takes imported flat graphs as folders (v2).
+            store.write(base, payload)
+        else:
+            write_graph_pair(graphs_dir / f"{base}.graph.json",
+                             layout_dir / f"{base}.layout.json", payload)
         adopted.append(base)
     if adopted:
         # scaffold_project leaves `.gitkeep` placeholders; once real
@@ -545,7 +571,11 @@ def _atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + f".tmp-{os.getpid()}")
     try:
-        tmp.write_text(text, encoding="utf-8")
+        # newline="\n": text mode would otherwise turn every "\n" into
+        # "\r\n" on Windows, and these files are LF by contract (the project
+        # .gitattributes says `*.json text eol=lf` because the server writes
+        # LF). Phase 4B CI found it: a v1 save on Windows wrote CRLF.
+        tmp.write_text(text, encoding="utf-8", newline="\n")
         os.replace(tmp, path)
     finally:
         # The cleanup must never become the error the caller sees. ``unlink``

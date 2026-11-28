@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { Edge, Node } from '@xyflow/react';
 
 import type { NodeData, SubgraphDefinition } from '../types';
+import { buildNoteNode, resolveSerializedNodes } from './index';
 import {
   collapseSelection,
   definitionFromCanvas,
@@ -437,10 +438,22 @@ describe('definitionFromCanvas', () => {
     expect(next.nodes[0].position).toEqual({ x: 0, y: 0 });
   });
 
-  it('leaves note nodes out of the definition', () => {
-    const note = { ...node('n1', 'note'), type: 'noteNode' };
-    const next = definitionFromCanvas(base, [node('x', 'X'), note], []);
-    expect(next.nodes.map((n) => n.id)).toEqual(['x']);
+  it('keeps a note written inside the block (phase 4B: it was dropped on exit)', () => {
+    const note = buildNoteNode({
+      id: 'n1', text: 'why this block exists', position: { x: 140, y: 190 },
+      boundToNodeId: 'x', boundOffset: { x: 10, y: -40 },
+    });
+    const next = definitionFromCanvas(base, [node('x', 'X', { x: 40, y: 90 }), note], []);
+    expect(next.nodes.map((n) => n.id)).toEqual(['x', 'n1']);
+    // Read back the way entering the block reads its definition.
+    const back = resolveSerializedNodes(next.nodes, [], [], []);
+    const restored = back.find((n) => n.id === 'n1')!;
+    expect(restored.type).toBe('noteNode');
+    expect(restored.data.noteContent).toBe('why this block exists');
+    expect(restored.data.boundToNodeId).toBe('x');
+    expect(restored.position).toEqual({ x: 100, y: 100 });
+    // A note is not a port owner and does not move the block's origin.
+    expect(next.nodes[0].position).toEqual({ x: 0, y: 0 });
   });
 });
 

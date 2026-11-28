@@ -15,6 +15,7 @@ CI-able validation, and a git commit recorded at every publish.
 my-service/
   codefyui.project.toml   manifest: name, plugin pins, default publish target
   graphs/    <name>.graph.json    logic (nodes/edges/params/presets/subgraphs, optional settings.device / settings.seed)
+             <name>/              or the same graph as a folder (see "Graphs stored as folders")
   layout/    <name>.layout.json   positions, note geometry, segments (reviewable, generated)
   assets/images/   assets/models/   assets/data/    scaffolded empty
   assets/output/                                    created on demand (e.g. ImageWriter)
@@ -57,7 +58,7 @@ empty; none of those five files is overwritten if it already exists.
 `assets/output/` is not created up front; it appears the first time a node (for
 example ImageWriter) writes to it.
 
-`.gitattributes` holds two lines. `*.json text eol=lf` keeps graph and layout
+`.gitattributes` holds four lines about line endings and diffs, plus three `merge=codefyui` lines (see [Graphs stored as folders](#graphs-stored-as-folders) for the two about `*.jsonl` and `graphs/**/nodes/*`). `*.json text eol=lf` keeps graph and layout
 files LF on checkout: the server writes them with LF, and a Windows checkout
 with `core.autocrlf=true` would otherwise hand them back as CRLF, so every save
 would rewrite every line. `layout/*.layout.json linguist-generated=true`
@@ -322,6 +323,130 @@ curl -s http://127.0.0.1:8000/api/apps/echo-svc/versions \
 
 The active version's `GET /api/apps/echo-svc/openapi.json` `info` block also
 carries `x-codefyui-git-commit` and `x-codefyui-git-dirty`.
+
+## Graphs stored as folders {/* #graphs-stored-as-folders */}
+
+A project whose manifest says
+
+```toml
+[storage]
+graph_format = "dir"
+```
+
+saves each **new** graph as a folder instead of one file. Projects created by
+the server or by `cdui project init` say this; a project without the key keeps
+saving single files. A graph keeps the form it has on disk until you run
+`cdui project migrate`.
+
+```
+graphs/<name>/
+  index.json                  storage_version 2, format_version, name, description, settings, requires
+  nodes/<node>.json           one file per node: {id, type, o, data}
+  nodes/<node>.code.py        a long text parameter (a newline and more than 400 characters)
+  edges.jsonl                 one wire per line, sorted by (source, sourceHandle, target, targetHandle)
+  subgraphs/<block>/          a block definition, the same way, with its interface in index.json
+  presets/<preset>.json       one embedded preset per file
+layout/<name>.layout.json     unchanged: positions, note geometry, segments
+```
+
+- **One change, one file.** Editing a parameter rewrites that node's file and
+  nothing else; adding a node adds its file and updates the layout file; a
+  save that changed nothing writes nothing. A 1,000-node graph saves in well
+  under a second.
+- **Order.** Each node file and edge line carries an integer `o`. A new entry
+  takes the largest plus 1024, an entry moved between two others takes the
+  midpoint, and everything is renumbered only when a gap runs out (after ten
+  inserts at the same place). A hand-written node file without `o` sorts last.
+- **File names are hints.** A file is named from the node id, cleaned to a
+  name every filesystem accepts, with a short hash of the id when it had to be
+  cleaned, would collide with another name that differs only in letter case,
+  or is a reserved Windows name. The `id` inside the file is what counts.
+- **Long text** moves into its own file (`.py` for parameters named `code`,
+  `script` or ending in `_code`, `.txt` otherwise), so a code change shows as
+  a line diff. Text crosses into or out of the file as it passes 400
+  characters. Text with Windows line endings stays inline.
+- **`requires`** in `index.json` lists the plugin node types (by plugin id) and
+  the custom node types the graph uses, with no versions; pinning stays in the
+  manifest's `[plugins]`. A type this machine does not know keeps the entry
+  the last save wrote.
+- **Nothing is lost on save.** Before writing, the server checks that the
+  files it is about to write read back as exactly the graph being saved, and
+  writes nothing (HTTP 500) when they do not. Files are written new and
+  changed first, then `edges.jsonl`, then `index.json`, and stale files are
+  removed last. Other files you put in the folder are left alone. While a
+  save runs, the folder holds a `.saving` marker (gitignored); a save that
+  never finished (a crash, a power cut) leaves it, and the next open reports
+  that the folder may mix two versions.
+- **Repairs are never saved silently.** When a folder needs a repair to be
+  read (a wire to a node whose file is gone, a repeated wire, two files with
+  one id, a missing text file, a node file that is not valid JSON, bytes that
+  are not UTF-8, a symbolic link, an unfinished save), the editor
+  says "Repaired N thing(s)" once and the tab shows unsaved changes; the
+  repaired graph reaches disk only when you save. `cdui project validate`
+  fails and lists every repair. A missing or unreadable `index.json` is an
+  error, not a repair.
+- A folder written by a newer CodefyUI (a higher `storage_version`) is listed
+  in the Graphs panel but cannot be opened, renamed or saved over. A folder
+  and a single file with the same name (for example after checking out an old
+  commit) is refused with a message naming both; remove the one you do not
+  want. A graph that cannot be opened stays in the Graphs panel, greyed out,
+  with the reason in its tooltip.
+- **Symbolic links are never followed** inside a graph folder: each is
+  skipped and reported. A graph file, folder or layout file that is itself a
+  link to somewhere outside the project is refused.
+- **Size.** One file of a graph folder may be at most 16 MB; a graph with a
+  bigger one is refused, not opened without it.
+- **Names.** A graph name is at most 100 characters. Windows reserved names
+  (`CON`, `aux`, `LPT1`...) are saved with a trailing `_`, so the project can
+  be checked out on Windows; a graph saved under such a name earlier keeps it.
+
+`.gitattributes` in a new project also keeps `*.jsonl` and `graphs/**/nodes/*`
+at LF.
+
+### Migrating {/* #migrating */}
+
+```bash
+cdui project migrate my-service            # every graph to folders
+cdui project migrate my-service --to file  # back to single files
+cdui project migrate my-service --graph echo
+```
+
+Each graph is written in the new form and read back; only when it reads as
+the same graph (logic and layout) is the old form removed, and on any failure
+the old form is left exactly as it was. Migrating the whole project also sets
+`[storage] graph_format`. A folder that needs repairs, or a graph with wires a
+folder cannot keep (a wire to a missing node, a second wire between the same
+two ports), is refused: open it in the editor and save it once. Git sees a
+migration as files deleted and files added, so `git log --follow` does not
+reach history from before it; ask for the old path instead
+(`git log -- graphs/<name>.graph.json`), and commit the migration on its own.
+
+### Merging {/* #merging */}
+
+A new project's `.gitattributes` marks `edges.jsonl`, `index.json` and the
+layout files `merge=codefyui`: they merge **by key**, not by line. Two branches
+that each add nodes and wires, or one that removes a wire while the other adds
+one beside it, merge cleanly; a conflict is left only when both sides changed
+the same wire, position or index entry differently, and then git's own
+conflict markers are written. A folder graph's layout lists positions sorted by
+node id, so even a plain line merge conflicts less.
+
+Merges run from Source Control (pull, stash pop, switching with changes)
+use this merge automatically. For merges run in a terminal, set it up once per
+clone:
+
+```bash
+cdui project git-setup my-service
+```
+
+It writes the merge driver into the repository's `.git/config` (and adds the
+`merge=codefyui` lines to an older project's `.gitattributes`). Without it, git
+uses its ordinary line merge for these files: more conflicts, never a wrong
+merge.
+
+In Source Control a folder graph is one row with a summary of what changed in
+the graph; expand it to see its files. Stage, unstage and discard on that row
+act on the whole folder and its layout file.
 
 ## The default project and switching projects {/* #the-default-project-and-switching-projects */}
 

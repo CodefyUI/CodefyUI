@@ -728,6 +728,12 @@ class GitService:
         return await self._read(
             lambda root: diff_ops.file_at_ref(root, path, ref))
 
+    async def graph_at_ref(self, name: str, ref: str) -> dict:
+        """One saved graph's logic document at one ref (v1 or v2)."""
+        from .graph import graph_at_ref
+
+        return await self._read(lambda root: graph_at_ref(root, name, ref))
+
     async def branches(self) -> BranchesResponse:
         """Every branch, local and remote-tracking, and what HEAD is on."""
         return await self._read(refs_ops.list_branches)

@@ -225,6 +225,29 @@ describe('GraphsTab list', () => {
     expect(await screen.findByText('Modified 1 hour ago')).toBeTruthy();
   });
 
+  it('lists a graph stored by a newer CodefyUI but will not open it', async () => {
+    mockedRest.listGraphs.mockResolvedValue([
+      graph({ name: 'future', file: 'future', newer: true }),
+    ]);
+    render(<GraphsTab />);
+    const row = await screen.findByRole('button', { name: 'Open future' });
+    expect((row as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(/newer CodefyUI/)).toBeTruthy();
+  });
+
+  it('lists a graph that cannot be read, says why, and will not open it', async () => {
+    mockedRest.listGraphs.mockResolvedValue([
+      graph({ name: 'broken', file: 'broken', error: "Graph 'broken' cannot be read: index.json is not a JSON object" }),
+      graph({ name: 'fine', file: 'fine' }),
+    ]);
+    render(<GraphsTab />);
+    const row = await screen.findByRole('button', { name: 'Open broken' });
+    expect((row as HTMLButtonElement).disabled).toBe(true);
+    expect(row.closest('li')?.getAttribute('title')).toContain('is not a JSON object');
+    expect(screen.getByText('Cannot be opened. Hover for why.')).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Open fine' }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it('marks the row the active tab is bound to', async () => {
     useTabStore.getState().setCurrentGraphFile('beta', 'beta');
     mockedRest.listGraphs.mockResolvedValue([

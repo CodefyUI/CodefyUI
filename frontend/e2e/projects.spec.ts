@@ -147,7 +147,10 @@ test('create a project, save and commit a graph, switch away and back', async ({
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await answerPrompt(page, 'Enter a name for this graph:', 'in-second');
   await expect(page.getByText('Graph "in-second" saved successfully.')).toBeVisible();
-  expect(readdirSync(path.join(second, 'graphs'))).toContain('in-second.graph.json');
+  // A new project stores new graphs as folders (phase 4B, `[storage]
+  // graph_format = "dir"`): one file per node under graphs/in-second/.
+  expect(readdirSync(path.join(second, 'graphs'))).toContain('in-second');
+  expect(readdirSync(path.join(second, 'graphs', 'in-second'))).toContain('index.json');
   await expect(page.getByText('Graphs · second')).toBeVisible();
 
   // Commit it from Source Control.

@@ -63,7 +63,7 @@ import { SubgraphBreadcrumb } from './SubgraphBreadcrumb';
 import { NoteBindingLines } from './NoteBindingLines';
 import { SegmentBubble } from './SegmentBubble';
 import { triggerDropConnection } from './triggerDrop';
-import { withoutOccupants } from '../../utils/occupiedInput';
+import { reconnectedEdges } from '../../utils/occupiedInput';
 import type { FinalConnectionState } from '@xyflow/react';
 import { useTabStore } from '../../store/tabStore';
 import { runNodePrefix } from '../../utils/subgraph';
@@ -791,17 +791,8 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
     // The input the wire lands on keeps one source (#562): a wire already
     // feeding it goes in this same undo step. The moved wire itself is left
     // out of that test, since it no longer occupies the input it is leaving.
-    setEdges(
-      withoutOccupants(tab.edges, newConnection, oldEdge.id)
-        .filter((e) => e.id !== oldEdge.id)
-        .concat({
-          ...oldEdge,
-          source: newConnection.source,
-          target: newConnection.target,
-          sourceHandle: newConnection.sourceHandle ?? undefined,
-          targetHandle: newConnection.targetHandle ?? undefined,
-        }),
-    );
+    // The moved wire stays where it was in the list (`reconnectedEdges`).
+    setEdges(reconnectedEdges(tab.edges, oldEdge, newConnection));
   }, []);
 
   // A data wire released on a port whose type it cannot feed is refused by

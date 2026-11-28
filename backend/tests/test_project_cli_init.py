@@ -40,6 +40,12 @@ def test_init_scaffolds_all_files(tmp_path):
     assert "*.tmp-*" in gi
     ga = (target / ".gitattributes").read_text(encoding="utf-8")
     assert "layout/*.layout.json linguist-generated=true" in ga
+    # Phase 4B: a new project stores new graphs as folders, and their
+    # node and edge files keep LF on every checkout.
+    assert "*.jsonl text eol=lf" in ga
+    assert "graphs/**/nodes/* text eol=lf" in ga
+    toml = (target / "codefyui.project.toml").read_text(encoding="utf-8")
+    assert "[storage]" in toml and 'graph_format = "dir"' in toml
 
 
 def test_init_refuses_nonempty_dir(tmp_path):
@@ -60,14 +66,17 @@ def test_init_adopt_splits_legacy_json(tmp_path):
     }), encoding="utf-8")
     target = tmp_path / "svc"
     assert project.cmd_init(_args(dir=str(target), adopt=str(src))) == 0
-    assert (target / "graphs" / "classifier.graph.json").exists()
+    # A "dir" project takes the flat file as a folder (phase 4B).
+    assert (target / "graphs" / "classifier" / "index.json").exists()
+    assert not (target / "graphs" / "classifier.graph.json").exists()
     layout = json.loads(
         (target / "layout" / "classifier.layout.json").read_text(encoding="utf-8"))
     assert layout["positions"]["a"] == {"x": 3, "y": 4}
 
 
 def test_init_adopt_keeps_the_device_in_logic(tmp_path):
-    """A legacy file's ``settings.device`` lands in ``graphs/<base>.graph.json``."""
+    """A legacy file's ``settings.device`` lands in the graph's logic (the
+    folder's ``index.json``), never in the layout."""
     src = tmp_path / "old"
     src.mkdir()
     (src / "pinned.json").write_text(json.dumps({
@@ -80,7 +89,7 @@ def test_init_adopt_keeps_the_device_in_logic(tmp_path):
     target = tmp_path / "svc"
     assert project.cmd_init(_args(dir=str(target), adopt=str(src))) == 0
     logic = json.loads(
-        (target / "graphs" / "pinned.graph.json").read_text(encoding="utf-8"))
+        (target / "graphs" / "pinned" / "index.json").read_text(encoding="utf-8"))
     layout = json.loads(
         (target / "layout" / "pinned.layout.json").read_text(encoding="utf-8"))
     assert logic["settings"] == {"device": "cuda:1"}
@@ -96,8 +105,8 @@ def test_init_adopt_canonical_source_keeps_base(tmp_path):
         {"name": "mix", "nodes": [], "edges": []}), encoding="utf-8")
     target = tmp_path / "svc"
     assert project.cmd_init(_args(dir=str(target), adopt=str(src))) == 0
-    assert (target / "graphs" / "mix.graph.json").exists()
-    assert not (target / "graphs" / "mix.graph.graph.json").exists()
+    assert (target / "graphs" / "mix" / "index.json").exists()
+    assert not (target / "graphs" / "mix.graph").exists()
 
 
 def test_init_adopt_skips_layout_files(tmp_path):
@@ -111,8 +120,8 @@ def test_init_adopt_skips_layout_files(tmp_path):
         {"format_version": 1, "positions": {}}), encoding="utf-8")
     target = tmp_path / "svc"
     assert project.cmd_init(_args(dir=str(target), adopt=str(src))) == 0
-    adopted = sorted(p.name for p in (target / "graphs").glob("*.graph.json"))
-    assert adopted == ["keep.graph.json"]
+    adopted = sorted(p.name for p in (target / "graphs").iterdir() if p.is_dir())
+    assert adopted == ["keep"]
 
 
 def test_init_adopt_ambiguous_pair_fails_naming_both(tmp_path, capsys):
@@ -145,7 +154,7 @@ def test_init_adopt_removes_stale_gitkeep(tmp_path):
     target = tmp_path / "svc"
     assert project.cmd_init(_args(dir=str(target), adopt=str(src))) == 0
     # Real files landed, so the scaffold placeholders must be gone ...
-    assert (target / "graphs" / "g.graph.json").exists()
+    assert (target / "graphs" / "g" / "index.json").exists()
     assert not (target / "graphs" / ".gitkeep").exists()
     assert not (target / "layout" / ".gitkeep").exists()
     # ... while still-empty assets dirs keep theirs.

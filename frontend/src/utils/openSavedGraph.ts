@@ -88,6 +88,8 @@ export interface SavedGraphPayload {
    */
   layout_missing?: boolean;
   format_version?: unknown;
+  /** A folder graph the server repaired to read; see `GraphDocument.storageRepairs`. */
+  storage_repairs?: unknown;
 }
 
 /**
@@ -162,6 +164,7 @@ export function resolveSavedGraph(
     device: readGraphDevice(data.settings),
     seed: readGraphSeed(data.settings),
     formatVersion: data.format_version,
+    storageRepairs: Array.isArray(data.storage_repairs) ? data.storage_repairs.length : 0,
     // `name` is deliberately absent, and it is NOT the same field as
     // `boundName` above -- the next reader here will think it is. `name` is
     // the TAB LABEL, which the user may have typed themselves; a saved graph

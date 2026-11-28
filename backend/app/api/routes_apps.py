@@ -42,7 +42,8 @@ from ..core.api_keys import (
 from ..core.db import Database, utc_now_iso
 from ..core.graph_engine import find_entry_points, validate_graph
 from ..core.secret_params import find_secret_violations
-from .routes_graph import GraphAmbiguityError, _graph_path, _sanitize_name
+from ..core.graph_storage import GraphNotFound, GraphStore, GraphUnreadable
+from .routes_graph import GraphAmbiguityError, _sanitize_name
 from .routes_graph_run import (
     _derive_output_type,
     _parse_run_body,
@@ -192,16 +193,14 @@ async def publish_app(slug: str, body: PublishRequest, request: Request):
         raise _manage_error(404, "graph_not_found",
                             f"Graph '{body.graph}' not found")
     try:
-        path = _graph_path(body.graph)
+        graph_data, graph_text = GraphStore.current().read_logic_with_snapshot(
+            body.graph, display_name=body.graph)
     except GraphAmbiguityError as e:
         raise _manage_error(409, "invalid_graph", str(e))
-    if not path.exists():
+    except GraphNotFound:
         raise _manage_error(404, "graph_not_found",
                             f"Graph '{body.graph}' not found")
-    try:
-        graph_text = path.read_text()
-        graph_data = json.loads(graph_text)
-    except (ValueError, OSError):
+    except GraphUnreadable:
         raise _manage_error(
             500, "graph_unreadable",
             f"Graph file for '{body.graph}' exists but is not valid JSON",

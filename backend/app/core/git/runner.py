@@ -583,7 +583,43 @@ def _argv(git: str, cwd: Path, args: Sequence[str], *,
     prefix = (GIT_PREFIX_ARGS if literal_pathspecs
               else tuple(arg for arg in GIT_PREFIX_ARGS
                          if arg != LITERAL_PATHSPECS))
+    if _merges(args):
+        prefix = (*prefix, *merge_driver_config())
     return [git, "-C", str(cwd.resolve()), *prefix, *args]
+
+
+#: Subcommands that can run a file-level merge, and so may need the graph
+#: merge driver (``merge_driver.py``): a pull's merge step, a stash brought
+#: back over changes, a checkout that carries local changes along.
+MERGING_SUBCOMMANDS = frozenset({
+    "merge", "pull", "rebase", "cherry-pick", "revert", "am",
+    "checkout", "switch",
+})
+
+
+def _merges(args: Sequence[str]) -> bool:
+    """Can ``git <args>`` run a file-level merge? ``stash`` only when it
+    brings a stash back (``pop`` / ``apply``)."""
+    if not args:
+        return False
+    if args[0] == "stash":
+        return len(args) > 1 and args[1] in ("pop", "apply")
+    return args[0] in MERGING_SUBCOMMANDS
+
+
+def merge_driver_config() -> tuple[str, ...]:
+    """``-c`` options that define the ``codefyui`` merge driver for one
+    command. Built here from this server's own interpreter and file -- never
+    read from the repository, which only says which files use it
+    (``.gitattributes``: ``merge=codefyui``). ``-I`` keeps the interpreter
+    from importing anything out of the repository it is run in."""
+    from .merge_driver import DRIVER_NAME
+
+    script = Path(__file__).with_name("merge_driver.py").resolve().as_posix()
+    python = Path(sys.executable).resolve().as_posix()
+    command = f'"{python}" -I "{script}" %O %A %B %P'
+    return ("-c", f"merge.{DRIVER_NAME}.name=CodefyUI graph merge",
+            "-c", f"merge.{DRIVER_NAME}.driver={command}")
 
 
 def _drain(proc: subprocess.Popen) -> None:

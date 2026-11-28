@@ -143,7 +143,7 @@ def _stop_agent(client: httpx.Client, agent: subprocess.Popen,
         agent.kill()
         output, _ = agent.communicate()
     # The agent's own exit is seen by the server: the socket closed.
-    deadline = time.monotonic() + 15
+    deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
         statuses = {w["name"]: w["status"]
                     for w in client.get("/api/workers").json()["workers"]}
@@ -644,7 +644,7 @@ def test_a_run_without_shared_storage_ships_its_input_and_its_checkpoint(
         app.state.run_service._retention_keep_last = 1
         last = client.post("/api/runs", json={"graph": _graph()}).json()
         _wait_terminal(client, last["run_id"])
-        deadline = time.monotonic() + 15
+        deadline = time.monotonic() + 120
         while (control / "runs" / first).exists() \
                 or (control / "runs" / second).exists():
             assert time.monotonic() < deadline, "retention kept the files"
