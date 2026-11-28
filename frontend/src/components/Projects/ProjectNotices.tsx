@@ -19,12 +19,25 @@ const EnvConsentDialog = lazyRetry(
   (props) => props.onClose(),
 );
 
-function declined(sha: string | null): boolean {
+/** sessionStorage: the mods digest the user said "not now" to (ModsConsentDialog's key). */
+const MODS_DECLINED_KEY = 'codefyui-mods-declined';
+
+const ModsConsentDialog = lazyRetry(
+  () => import('./ModsConsentDialog').then((m) => m.ModsConsentDialog),
+  (props) => props.onClose(),
+);
+
+function declined(sha: string | null, key = ENV_DECLINED_KEY): boolean {
   try {
-    return sha !== null && sessionStorage.getItem(ENV_DECLINED_KEY) === sha;
+    return sha !== null && sessionStorage.getItem(key) === sha;
   } catch {
     return false;
   }
+}
+
+/** "Not now" was said to exactly this mods/ tree this session. */
+function modsDeclined(digest: string | null | undefined): boolean {
+  return declined(digest ?? null, MODS_DECLINED_KEY);
 }
 
 /**
@@ -43,6 +56,7 @@ export function ProjectNotices() {
   const stale = useProjectStore((s) => s.stale);
   const overview = useProjectStore((s) => s.overview);
   const [consentOpen, setConsentOpen] = useState(false);
+  const modsOpen = useProjectStore((s) => s.modsReviewOpen);
   useProjectDriftCheck();
 
   useEffect(() => {
@@ -72,6 +86,11 @@ export function ProjectNotices() {
     if (!overview) return;
     if (overview.env.needs_consent && !declined(overview.env.sha256)) {
       setConsentOpen(true);
+    }
+    // The mods prompt after the .env one: never two dialogs at once.
+    if (overview.mods?.needs_consent && !modsDeclined(overview.mods?.digest)
+        && !(overview.env.needs_consent && !declined(overview.env.sha256))) {
+      useProjectStore.getState().openModsReview();
     }
     const warnings = overview.startup?.warnings ?? [];
     if (warnings.length > 0) {
@@ -111,7 +130,18 @@ export function ProjectNotices() {
       {consentOpen && overview && (
         <Suspense fallback={null}>
           <EnvConsentDialog env={overview.env} project={overview.current?.name ?? ''}
-            onClose={() => setConsentOpen(false)} />
+            onClose={() => {
+              setConsentOpen(false);
+              if (overview.mods?.needs_consent && !modsDeclined(overview.mods?.digest)) {
+                useProjectStore.getState().openModsReview();
+              }
+            }} />
+        </Suspense>
+      )}
+      {modsOpen && !consentOpen && overview?.current && (
+        <Suspense fallback={null}>
+          <ModsConsentDialog project={overview.current.name}
+            onClose={() => useProjectStore.getState().closeModsReview()} />
         </Suspense>
       )}
     </>

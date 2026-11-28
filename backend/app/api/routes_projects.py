@@ -154,6 +154,7 @@ async def list_projects(request: Request) -> dict[str, Any]:
         "projects_root": str(Path(settings.PROJECTS_ROOT).expanduser()),
         "recent": recent,
         "env": _env_view(),
+        "mods": _mods_view(current),
         "startup": None if decision is None else {
             "reason": decision.reason,
             "created": decision.created,
@@ -393,6 +394,10 @@ def _mods_view(project: Path | None) -> dict[str, Any]:
         return {"state": "none", "loaded": False, "needs_consent": False}
     status = mods.current_status(project)
     status["needs_consent"] = status["state"] in ("untrusted", "changed")
+    if status["needs_consent"]:
+        # What a "not now" is remembered against: the same tree is not
+        # asked about again this session, a changed one is.
+        status["digest"] = mods.mods_digest(mods.walk_mods(project))
     return status
 
 

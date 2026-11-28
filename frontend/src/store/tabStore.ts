@@ -872,6 +872,13 @@ interface TabStoreState {
     exceptTabId?: string,
   ) => void;
   setTabReadOnly: (v: boolean) => void;
+  /**
+   * Give every node whose type starts with *prefix* the definition the node
+   * list now has for it (phase 4C: `project:` nodes opened while the
+   * project's mods were not loaded carried a placeholder). Their params,
+   * ids and wires were never touched; no undo frame, nothing marked dirty.
+   */
+  refreshNodeDefinitions: (prefix: string) => void;
   // Per-project persistence scoping (ID10)
   rehydrateForProject: (projectId: string | null) => void;
   stampActiveTabProject: (projectId: string | null) => void;
@@ -3544,6 +3551,26 @@ export const useTabStore = create<TabStoreState>((rawSet, get) => {
         currentGraphName: file === null ? null : name,
       })),
     }),
+
+  refreshNodeDefinitions: (prefix) => {
+    const defs = new Map(
+      useNodeDefStore.getState().definitions.map((d) => [d.node_name, d] as const),
+    );
+    const held = get().tabs;
+    const tabs = held.map((tab) => {
+      let touched = false;
+      const nodes = tab.nodes.map((node) => {
+        const type = node.data?.type;
+        if (typeof type !== 'string' || !type.startsWith(prefix)) return node;
+        const definition = defs.get(type);
+        if (!definition || node.data.definition === definition) return node;
+        touched = true;
+        return { ...node, data: { ...node.data, definition } };
+      });
+      return touched ? { ...tab, nodes } : tab;
+    });
+    if (tabs.some((tab, i) => tab !== held[i])) set({ tabs });
+  },
 
   rebindGraphFile: (from, to, exceptTabId) => {
     // Clear Canvas: the bindings undo frames hold go the same way, first

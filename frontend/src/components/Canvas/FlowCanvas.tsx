@@ -60,6 +60,7 @@ import {
 } from '../ContextMenu/NodeContextMenu';
 import { PaneContextMenu } from './PaneContextMenu';
 import { SubgraphBreadcrumb } from './SubgraphBreadcrumb';
+import { ModsNotLoadedBanner } from '../Projects/ModsNotLoadedBanner';
 import { NoteBindingLines } from './NoteBindingLines';
 import { SegmentBubble } from './SegmentBubble';
 import { triggerDropConnection } from './triggerDrop';
@@ -1178,6 +1179,7 @@ export function FlowCanvas({ tabId }: { tabId?: string } = {}) {
       </EdgeLaneProvider>
 
       <SubgraphBreadcrumb />
+      <ModsNotLoadedBanner />
 
       {contextMenu && (
         <NodeContextMenu

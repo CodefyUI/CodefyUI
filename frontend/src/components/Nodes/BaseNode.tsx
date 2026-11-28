@@ -29,6 +29,8 @@ import { layerNodeCount } from '../LayersEditor/graphSerialization';
 import { subgraphIdOf } from '../../utils/subgraph';
 import { nodeCategoryLabel } from '../../utils/categoryLabels';
 import { useIsTriggerTarget } from './triggerTarget';
+import { useNodeDefStore } from '../../store/nodeDefStore';
+import { isProjectNodeType, useProjectStore } from '../../store/projectStore';
 import styles from './BaseNode.module.css';
 
 type BaseNodeProps = NodeProps<AppNode> & {
@@ -186,6 +188,12 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
   // is text in the header's flex row.)
   const { byId, loaded, unsupported } = usePackAvailability();
   const missingPack = nodeMissingPack(def, byId, loaded, unsupported);
+  // A `project:` node whose type this server has not registered: the
+  // project's mods are not loaded (phase 4C). A boolean selector, false at
+  // once for every other node, so a canvas of ordinary nodes pays nothing.
+  const modsNotLoaded = useNodeDefStore((s) =>
+    isProjectNodeType(data.type) && s.definitions.length > 0
+      && !s.definitions.some((d) => d.node_name === data.type));
 
   const isSequentialModel = data.type === 'SequentialModel';
   // core#137: a subgraph instance opens its definition on double-click, the
@@ -392,6 +400,21 @@ export function BaseNodeBody({ id, data, selected, bodyExtra }: BaseNodeProps) {
             it does something. `nodrag` keeps the press from starting a node
             drag, and stopPropagation keeps the click off the card underneath
             (which selects, and on a second click opens the detail modal). */}
+        {modsNotLoaded && (
+          <button
+            type="button"
+            className={`${styles.packBadge} nodrag`}
+            title={t('node.modsNotLoaded.title')}
+            data-testid="node-mods-not-loaded"
+            onClick={(e) => {
+              e.stopPropagation();
+              useProjectStore.getState().openModsReview();
+            }}
+            onDoubleClick={(e) => e.stopPropagation()}
+          >
+            {t('node.modsNotLoaded')}
+          </button>
+        )}
         {missingPack !== null && (
           <button
             type="button"

@@ -35,6 +35,10 @@ interface ProjectState {
   loadOverview: () => Promise<ProjectsOverview | null>;
   setOverview: (overview: ProjectsOverview) => void;
   markStale: () => void;
+  /** The mods trust prompt is open (from the notice, a banner or a badge). */
+  modsReviewOpen: boolean;
+  openModsReview: () => void;
+  closeModsReview: () => void;
 }
 
 export const useProjectStore = create<ProjectState>((set) => ({
@@ -63,7 +67,17 @@ export const useProjectStore = create<ProjectState>((set) => ({
   },
   setOverview: (overview) => set({ overview }),
   markStale: () => set({ stale: true }),
+  modsReviewOpen: false,
+  openModsReview: () => set({ modsReviewOpen: true }),
+  closeModsReview: () => set({ modsReviewOpen: false }),
 }));
+
+/** The registry prefix of a project's own mods nodes (phase 4C). */
+export const PROJECT_NODE_PREFIX = 'project:';
+
+export function isProjectNodeType(type: string | undefined | null): boolean {
+  return typeof type === 'string' && type.startsWith(PROJECT_NODE_PREFIX);
+}
 
 export function isProjectMode(): boolean {
   return useProjectStore.getState().projectDir !== null;

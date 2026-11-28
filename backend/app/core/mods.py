@@ -399,9 +399,10 @@ class LoadedMods:
 
 
 _loaded = LoadedMods()
-#: Set once this process has executed any project's mods: unloading is not
-#: isolation, so a later switch recommends a restart.
-_ever_loaded = False
+#: Every project whose mods this process has executed. Unloading is not
+#: isolation, so once another project's code has run here, a restart is
+#: recommended.
+_ran: set[str] = set()
 
 
 def package_name(project: Path) -> str:
@@ -477,7 +478,6 @@ def _load(project: Path, tree: ModsTree, entry_files: dict[str, str], full: bool
     from .node_registry import registry
     from .preset_registry import preset_registry
 
-    global _ever_loaded
     package = package_name(project)
     scan = scan_mods(project, tree)
     by_path = {f["path"]: f for f in scan["files"]}
@@ -516,7 +516,7 @@ def _load(project: Path, tree: ModsTree, entry_files: dict[str, str], full: bool
             loaded.skipped.append({"path": f"nodes/{stem}.py", "reason": f"failed to load: {exc}"})
             logger.warning("project mod %s failed to load: %s", stem, exc)
             continue
-        _ever_loaded = True
+        _ran.add(str(project))
         for obj in vars(module).values():
             if isinstance(obj, type) and obj is not BaseNode and getattr(obj, "__module__", "") == name:
                 try:
@@ -591,5 +591,5 @@ def current_status(project: Path | None) -> dict[str, Any]:
         "nodes": list(_loaded.nodes) if mine else [],
         "presets": list(_loaded.presets) if mine else [],
         "skipped": list(_loaded.skipped) if mine else [],
-        "restart_recommended": _ever_loaded,
+        "restart_recommended": bool(_ran - {str(project)}),
     }

@@ -77,6 +77,9 @@ export const VIZ_NODE_TYPES: Record<string, string> = {
  * like `baseNode`.
  */
 export function resolveNodeComponentType(nodeType: string): string {
+  // A project's own mods node is never a first-party viz and never a
+  // plugin's: no plugin may own the `project:` prefix (phase 4C).
+  if (nodeType.startsWith('project:')) return 'baseNode';
   const bare = nodeType.includes(':')
     ? nodeType.slice(nodeType.lastIndexOf(':') + 1)
     : nodeType;

@@ -92,6 +92,14 @@ export function ProjectChip() {
       onSelect: () => setDialog('import'),
     });
   }
+  const mods = overview?.mods;
+  if (projectName && mods && mods.state !== 'none') {
+    items.push({
+      id: 'review-mods',
+      label: t('projects.menu.reviewMods'),
+      onSelect: () => useProjectStore.getState().openModsReview(),
+    });
+  }
   if (projectName && !branch) {
     items.push({
       id: 'source-control',
@@ -109,6 +117,12 @@ export function ProjectChip() {
         className={`${styles.chip} ${projectName ? '' : styles.chipFlat}`}
       >
         <span className={styles.chipName} data-testid="project-chip-name">{label}</span>
+        {overview?.mods?.restart_recommended && (
+          <span className={styles.chipRestart} title={t('projects.chip.restartTitle')}
+            data-testid="project-chip-restart">
+            {t('projects.chip.restart')}
+          </span>
+        )}
         {branch && (
           <span className={styles.chipBranch} title={t('projects.chip.branch', { branch })}>
             {branch}

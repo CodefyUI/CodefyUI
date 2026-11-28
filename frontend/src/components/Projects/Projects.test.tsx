@@ -12,6 +12,9 @@ import { renderSettled, settle } from '../../test/utils';
 import { ProjectChip } from './ProjectChip';
 import { ProjectDialog } from './ProjectDialog';
 import { ProjectNotices } from './ProjectNotices';
+import { ModsNotLoadedBanner } from './ModsNotLoadedBanner';
+import { useNodeDefStore } from '../../store/nodeDefStore';
+import { useTabStore } from '../../store/tabStore';
 
 vi.mock('../../api/projects', async (importOriginal) => {
   const actual = await importOriginal<typeof projectsApi>();
@@ -26,6 +29,8 @@ vi.mock('../../api/projects', async (importOriginal) => {
     getImportPlan: vi.fn(),
     importFlatGraphs: vi.fn(),
     getProjects: vi.fn(),
+    getProjectMods: vi.fn(),
+    trustProjectMods: vi.fn(),
   };
 });
 
@@ -458,5 +463,159 @@ describe('ProjectNotices', () => {
       'Copied 2 graph(s) and 3 file(s) into the project. 1 item(s) the project already had were kept.');
     expect(messages.some((m) => m.includes('CUDA_VISIBLE_DEVICES'))).toBe(true);
     expect(messages.some((m) => m.includes('git lfs pull'))).toBe(true);
+  });
+});
+
+
+// ── phase 4C: the mods/ trust prompt ─────────────────────────────────────
+
+const MODS_DIGEST = 'd'.repeat(64);
+
+function modsScan(patch: Partial<projectsApi.ModsScan> = {}): projectsApi.ModsScan {
+  return {
+    state: 'untrusted', loaded: false, needs_consent: true, restart_recommended: false,
+    digest: MODS_DIGEST,
+    files: [
+      { path: 'nodes/loss.py', size: 420, role: 'node', sha256: '1'.repeat(64), lines: 18,
+        finding: null, needs: [], nodes: ['FocalLoss'] },
+      { path: 'nodes/fetch.py', size: 900, role: 'node', sha256: '2'.repeat(64), lines: 30,
+        finding: { line: 3, message: "import of 'socket' is not allowed" },
+        needs: [{ capability: 'network', summary: 'open network connections' }],
+        nodes: ['Fetch'] },
+      { path: 'presets/aug.json', size: 120, role: 'preset', sha256: '3'.repeat(64) },
+    ],
+    refused: [], duplicates: {},
+    notice: 'These files are Python.',
+    trust: { state: 'untrusted', digest: MODS_DIGEST, changed: null },
+    ...patch,
+  };
+}
+
+const MODS_NEEDS = {
+  state: 'untrusted' as const, loaded: false, needs_consent: true, digest: MODS_DIGEST,
+};
+
+describe('Mods consent', () => {
+  it('lists each file with its scan, warns plainly, and trusts the digest it showed', async () => {
+    useProjectStore.setState({ overview: overview({ mods: MODS_NEEDS }) });
+    api.getProjectMods.mockResolvedValue(modsScan());
+    api.trustProjectMods.mockResolvedValue({
+      ...switched('alpha'),
+      mods: { state: 'trusted', loaded: true, needs_consent: false,
+        nodes: ['project:FocalLoss'], skipped: [{ path: 'nodes/fetch.py', reason: 'finding' }] },
+    });
+    const fetchDefinitions = vi.spyOn(useNodeDefStore.getState(), 'fetchDefinitions')
+      .mockResolvedValue(undefined);
+    await renderSettled(<ProjectNotices />);
+    const dialog = await screen.findByTestId('project-mods-consent');
+    await within(dialog).findAllByTestId('mods-file');
+    expect(dialog.textContent).toContain(
+      'These files are Python. Trusting them runs them in this CodefyUI server with your '
+      + 'permissions. The scan result is a hint, not a sandbox.');
+    const rows = within(dialog).getAllByTestId('mods-file');
+    expect(rows.map((r) => r.querySelector('code')!.textContent)).toEqual([
+      'mods/nodes/loss.py', 'mods/nodes/fetch.py', 'mods/presets/aug.json']);
+    expect(rows[0].textContent).toContain('18 lines');
+    expect(rows[0].textContent).toContain('no findings');
+    expect(rows[0].textContent).toContain('project:FocalLoss');
+    expect(rows[1].textContent).toContain("line 3: import of 'socket' is not allowed");
+    expect(rows[1].textContent).toContain('open network connections');
+    fireEvent.click(within(dialog).getByTestId('mods-trust'));
+    await waitFor(() => expect(api.trustProjectMods).toHaveBeenCalledWith(MODS_DIGEST, false));
+    await waitFor(() => expect(screen.queryByTestId('project-mods-consent')).toBeNull());
+    expect(fetchDefinitions).toHaveBeenCalled();
+    const messages = useToastStore.getState().toasts.map((t) => t.message);
+    expect(messages).toContain('Loaded 1 node(s) from mods/.');
+    expect(messages.some((m) => m.includes('nodes/fetch.py'))).toBe(true);
+    expect(useProjectStore.getState().overview!.mods!.needs_consent).toBe(false);
+    fetchDefinitions.mockRestore();
+  });
+
+  it('"trust these files completely" is asked for, and sent', async () => {
+    useProjectStore.setState({ overview: overview({ mods: MODS_NEEDS }) });
+    api.getProjectMods.mockResolvedValue(modsScan());
+    api.trustProjectMods.mockRejectedValue(
+      new projectsApi.ProjectError(409, 'mods_changed', 'changed'));
+    await renderSettled(<ProjectNotices />);
+    const dialog = await screen.findByTestId('project-mods-consent');
+    fireEvent.click(await within(dialog).findByTestId('mods-trust-full'));
+    fireEvent.click(within(dialog).getByTestId('mods-trust'));
+    await waitFor(() => expect(api.trustProjectMods).toHaveBeenCalledWith(MODS_DIGEST, true));
+    // A tree that changed since it was shown: said, not loaded.
+    expect((await within(dialog).findByRole('alert')).textContent)
+      .toContain('changed while this was open');
+  });
+
+  it('not now is kept for this digest, and a changed tree asks again', async () => {
+    useProjectStore.setState({ overview: overview({ mods: MODS_NEEDS }) });
+    api.getProjectMods.mockResolvedValue(modsScan());
+    const first = await renderSettled(<ProjectNotices />);
+    const dialog = await screen.findByTestId('project-mods-consent');
+    await within(dialog).findAllByTestId('mods-file');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Not now' }));
+    await waitFor(() => expect(screen.queryByTestId('project-mods-consent')).toBeNull());
+    expect(api.trustProjectMods).not.toHaveBeenCalled();
+    first.unmount();
+    // The same tree, next mount: not asked.
+    await renderSettled(<ProjectNotices />);
+    expect(screen.queryByTestId('project-mods-consent')).toBeNull();
+    // Another tree: asked.
+    act(() => useProjectStore.setState({
+      overview: overview({ mods: { ...MODS_NEEDS, digest: 'e'.repeat(64) } }) }));
+    expect(await screen.findByTestId('project-mods-consent')).toBeTruthy();
+  });
+
+  it('a blocked tree lists what is refused and offers no trust', async () => {
+    useProjectStore.setState({ overview: overview() });
+    api.getProjectMods.mockResolvedValue(modsScan({
+      state: 'blocked', needs_consent: false,
+      refused: [{ path: 'nodes/__pycache__', reason: 'compiled bytecode is never loaded' }],
+    }));
+    await renderSettled(<ProjectNotices />);
+    act(() => useProjectStore.getState().openModsReview());
+    const dialog = await screen.findByTestId('project-mods-consent');
+    expect((await within(dialog).findByTestId('mods-refused')).textContent)
+      .toContain('compiled bytecode is never loaded');
+    expect(within(dialog).queryByTestId('mods-trust')).toBeNull();
+  });
+
+  it('the chip offers Review mods and says when a restart is recommended', async () => {
+    useProjectStore.setState({ overview: overview({
+      mods: { state: 'trusted', loaded: true, needs_consent: false, restart_recommended: true },
+    }) });
+    await renderSettled(<ProjectChip />);
+    expect(screen.getByTestId('project-chip-restart').textContent).toBe('restart recommended');
+    fireEvent.click(screen.getByRole('button', { name: /alpha/ }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Review mods/' }));
+    expect(useProjectStore.getState().modsReviewOpen).toBe(true);
+    act(() => useProjectStore.getState().closeModsReview());
+  });
+
+  it('the tab banner counts project nodes the server does not have', async () => {
+    useNodeDefStore.setState({ definitions: [
+      { node_name: 'Conv2d', category: 'CNN', description: '', inputs: [], outputs: [], params: [] },
+    ] });
+    useTabStore.setState({ tabs: [], activeTabId: null as unknown as string });
+    useTabStore.getState().addTab('t');
+    useTabStore.getState().setNodes([
+      { id: 'a', type: 'baseNode', position: { x: 0, y: 0 },
+        data: { label: 'a', type: 'project:FocalLoss', params: {} } },
+      { id: 'b', type: 'baseNode', position: { x: 0, y: 0 },
+        data: { label: 'b', type: 'Conv2d', params: {} } },
+    ] as never);
+    await renderSettled(<ModsNotLoadedBanner />);
+    const banner = screen.getByTestId('mods-not-loaded-banner');
+    expect(banner.textContent).toContain('uses 1 node(s) from this project’s mods');
+    fireEvent.click(within(banner).getByRole('button', { name: 'Review mods' }));
+    expect(useProjectStore.getState().modsReviewOpen).toBe(true);
+    act(() => {
+      useProjectStore.getState().closeModsReview();
+      useNodeDefStore.setState({ definitions: [
+        ...useNodeDefStore.getState().definitions,
+        { node_name: 'project:FocalLoss', category: 'Loss', description: '', inputs: [],
+          outputs: [], params: [] },
+      ] });
+    });
+    expect(screen.queryByTestId('mods-not-loaded-banner')).toBeNull();
   });
 });

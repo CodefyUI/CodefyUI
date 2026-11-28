@@ -75,7 +75,8 @@ def _symlink(link: Path, target: Path) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _unloaded():
+def _unloaded(monkeypatch):
+    monkeypatch.setattr(mods, "_ran", set())
     mods.unload_project_mods()
     yield
     mods.unload_project_mods()
@@ -110,7 +111,7 @@ def test_trusted_nodes_register_qualified_and_never_bare(isolated):  # noqa: F81
     assert cls.__module__ == f"{mods.package_name(p)}.loss"
     assert provider_for("project:FocalLoss", cls) == "project"
     assert registry.get("FocalLoss") is None   # the bare name never reaches it
-    assert status["restart_recommended"] is True
+    assert status["restart_recommended"] is False   # only its own code ran
 
 
 def test_a_project_conv2d_leaves_the_builtin_alone(isolated):  # noqa: F811
