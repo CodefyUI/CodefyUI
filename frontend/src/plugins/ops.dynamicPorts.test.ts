@@ -15,10 +15,10 @@ const port = (name: string, data_type = 'ANY'): PortDefinition =>
   ({ name, data_type, description: '', optional: false });
 
 const intParam = (name: string, value: number, max: number) => ({
-  name, param_type: 'int', default: value, description: '', options: [], min_value: 1, max_value: max,
+  name, param_type: 'int' as const, default: value, description: '', options: [], min_value: 1, max_value: max,
 });
 const strParam = (name: string) => ({
-  name, param_type: 'string', default: '', description: '', options: [], min_value: null, max_value: null,
+  name, param_type: 'string' as const, default: '', description: '', options: [], min_value: null, max_value: null,
 });
 
 const DEFS: NodeDefinition[] = [
