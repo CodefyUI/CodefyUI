@@ -14,8 +14,14 @@ from typing import Any
 
 import httpx
 
-from ._common import TIMEOUT, content_to_text, parse_tool_args
-from .events import done_event, error_event, text_delta
+from ._common import (
+    content_to_text,
+    parse_tool_args,
+    should_retry,
+    timeout_for,
+    upstream_failure,
+)
+from .events import done_event, error_event, reasoning_delta, text_delta
 from .schema import ChatRequest, ToolCall
 
 _BASES = {
@@ -103,58 +109,71 @@ async def stream_chat(
     finish_reason: str | None = None
     usage: dict[str, int] = {}
 
+    # Resolved before the request so an invalid custom base_url surfaces as
+    # an error_event rather than raising synchronously to the caller.
     try:
-        # Resolve inside the try so an invalid custom base_url surfaces as an
-        # error_event rather than raising synchronously to the caller.
-        try:
-            url = f"{resolve_base_url(req)}/chat/completions"
-        except ValueError as exc:
-            yield error_event(str(exc))
-            return
-
-        async with client.stream("POST", url, json=build_payload(req),
-                                 headers=headers, timeout=TIMEOUT) as resp:
-            if resp.status_code != 200:
-                body = (await resp.aread()).decode("utf-8", "replace")[:500]
-                yield error_event(f"upstream {resp.status_code}: {body}")
-                return
-            async for line in resp.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                data = line[len("data: "):]
-                if data.strip() == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(chunk.get("usage"), dict):
-                    u = chunk["usage"]
-                    usage = {"input_tokens": int(u.get("prompt_tokens", 0)),
-                             "output_tokens": int(u.get("completion_tokens", 0))}
-                choices = chunk.get("choices") or []
-                if not choices:
-                    continue
-                choice = choices[0]
-                if choice.get("finish_reason"):
-                    finish_reason = choice["finish_reason"]
-                delta = choice.get("delta") or {}
-                if delta.get("content"):
-                    content_parts.append(delta["content"])
-                    yield text_delta(delta["content"])
-                for frag in delta.get("tool_calls") or []:
-                    slot = pending.setdefault(int(frag.get("index", 0)),
-                                              {"id": "", "name": "", "arguments": ""})
-                    if frag.get("id"):
-                        slot["id"] = frag["id"]
-                    fn = frag.get("function") or {}
-                    if fn.get("name"):
-                        slot["name"] = fn["name"]
-                    if fn.get("arguments"):
-                        slot["arguments"] += fn["arguments"]
-    except httpx.HTTPError as exc:
-        yield error_event(f"upstream request failed: {exc}")
+        url = f"{resolve_base_url(req)}/chat/completions"
+    except ValueError as exc:
+        yield error_event(str(exc))
         return
+
+    attempt = 0
+    while True:
+        received = False
+        try:
+            async with client.stream("POST", url, json=build_payload(req),
+                                     headers=headers, timeout=timeout_for(req.provider)) as resp:
+                received = True
+                if resp.status_code != 200:
+                    body = (await resp.aread()).decode("utf-8", "replace")[:500]
+                    yield error_event(f"upstream {resp.status_code}: {body}")
+                    return
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[len("data: "):]
+                    if data.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(chunk.get("usage"), dict):
+                        u = chunk["usage"]
+                        usage = {"input_tokens": int(u.get("prompt_tokens", 0)),
+                                 "output_tokens": int(u.get("completion_tokens", 0))}
+                    choices = chunk.get("choices") or []
+                    if not choices:
+                        continue
+                    choice = choices[0]
+                    if choice.get("finish_reason"):
+                        finish_reason = choice["finish_reason"]
+                    delta = choice.get("delta") or {}
+                    # Ollama and vLLM say `reasoning`, DeepSeek-style servers
+                    # `reasoning_content`: relayed, never part of the content.
+                    thought = delta.get("reasoning") or delta.get("reasoning_content")
+                    if isinstance(thought, str) and thought:
+                        yield reasoning_delta(thought)
+                    if delta.get("content"):
+                        content_parts.append(delta["content"])
+                        yield text_delta(delta["content"])
+                    for frag in delta.get("tool_calls") or []:
+                        slot = pending.setdefault(int(frag.get("index", 0)),
+                                                  {"id": "", "name": "", "arguments": ""})
+                        if frag.get("id"):
+                            slot["id"] = frag["id"]
+                        fn = frag.get("function") or {}
+                        if fn.get("name"):
+                            slot["name"] = fn["name"]
+                        if fn.get("arguments"):
+                            slot["arguments"] += fn["arguments"]
+            break
+        except httpx.HTTPError as exc:
+            if should_retry(exc, received=received, attempt=attempt):
+                attempt += 1
+                continue
+            yield error_event(upstream_failure(exc, req.provider, req.model))
+            return
 
     tool_calls = [
         ToolCall(id=slot["id"] or f"call_{i}", name=slot["name"],
