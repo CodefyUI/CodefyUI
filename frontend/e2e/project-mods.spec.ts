@@ -171,11 +171,31 @@ test('a project with mods asks first, opens without them, and asks again after a
   await expect(page.getByTestId('mods-not-loaded-banner')).toHaveCount(0);
   expect(existsSync(MARKER)).toBe(true);
 
-  // Change the file: the next load (Reload Nodes) does not run it and asks again.
+  // Change the file (as a pull in a terminal would). Coming back to the
+  // window says so; nothing reloads until asked, and the check asks again.
   writeLf(path.join(ELSEWHERE, 'mods', 'nodes', 'focal.py'), NODE_SOURCE(MARKER, '# edited'));
-  await page.getByTestId('toolbar-reload-nodes').click();
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  const disk = page.getByTestId('mods-disk-changed');
+  await expect(disk).toContainText('mods/ changed on disk');
+  await expect(consent(page)).toHaveCount(0);
+  await disk.getByRole('button', { name: 'Reload and check' }).click();
   await expect(consent(page)).toBeVisible();
+  await expect(disk).toHaveCount(0);
   await expect(consent(page)).toContainText('changed since you last agreed');
   await expect(consent(page).getByText('changed', { exact: true })).toBeVisible();
   await expect(focal.getByTestId('node-mods-not-loaded')).toHaveText('NOT LOADED');
+
+  // Leave it: another project's mods ran here, so the chip carries the
+  // restart icon beside the name, and the sentence is the menu's first row.
+  await consent(page).getByRole('button', { name: 'Not now' }).click();
+  await page.getByRole('button', { name: /^Project: / }).click();
+  await page.getByRole('menu').getByRole('menuitem', { name: 'Open home' }).click();
+  // The open tab took the node list's defaults when it opened, so it counts
+  // as unsaved: confirm leaving it (it stays with that project).
+  await page.getByRole('button', { name: 'Switch project' }).click();
+  await expect(chip(page)).toHaveText('home');
+  await expect(page.getByTestId('project-chip-restart')).toHaveAttribute('aria-label', 'restart recommended');
+  await page.getByRole('button', { name: /^Project: / }).click();
+  await expect(page.getByRole('menu').getByRole('menuitem').first())
+    .toContainText('Another project’s mods ran in this server');
 });

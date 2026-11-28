@@ -601,9 +601,25 @@ any change asks again at the next load (Reload Nodes, a switch, a restart).
   validate and publish refuse it and say why.
 
 A project this install created (the default project, **New project**, an
-import) is not asked about while its git `HEAD` stays where it was when its
-mods last loaded: your own edits load. When `HEAD` moved and `mods/`
-changed with it (a pull, a checkout), it asks like any other project.
+import) keeps a baseline: the git `HEAD` and the `mods/` files (none, at
+first) as they were when it was created and at every load since. While
+`HEAD` stays where the baseline saw it, your own edits load without asking.
+When `HEAD` moved and `mods/` changed with it (a pull, a merge, a checkout),
+it asks like any other project, including the first time mods arrive in a
+project that never had any. A project that is not a git repository is not
+asked about. One created before this version has no baseline yet, so mods it
+already holds ask once.
+
+When `mods/` changes on disk after it was loaded (a pull in Source Control
+or in a terminal), the editor says so: what runs is still the version loaded
+before, and **Reload and check** runs the check above. Nothing is reloaded
+on its own.
+
+Only the `.py` files directly in `mods/nodes/` (not `__init__.py`) and
+`mods/presets/*.json` are read. Every other file the prompt lists, such as
+`mods/__init__.py`, a `conftest.py` or a `.pth` file, is marked **not
+loaded** and listed after the ones that load. A finding is said in terms of
+the file: for example "Line 2 imports socket: needs network".
 
 Some things in `mods/` are never loaded, and when any is there, nothing in
 `mods/` loads and the prompt lists them: a symbolic link (or `mods` itself
