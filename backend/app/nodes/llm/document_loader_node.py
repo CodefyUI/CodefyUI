@@ -287,11 +287,11 @@ class DocumentLoaderNode(BaseNode):
                 param_type=ParamType.STRING,
                 default=DEFAULT_DIRECTORY,
                 description=(
-                    "Folder of .txt/.md files. Relative paths resolve against "
-                    "the backend working directory, then against the CodefyUI "
-                    "backend folder (so the bundled samples work from any "
-                    "directory); in project mode a relative path must stay "
-                    "inside the project."
+                    "Folder of .txt/.md files. The bundled corpus is "
+                    "data/samples/rag, which works in every mode. Other "
+                    "relative paths resolve against the backend working "
+                    "directory, then the CodefyUI backend folder; in project "
+                    "mode they resolve inside the project and must stay there."
                 ),
                 visible_when={"source": "directory"},
             ),

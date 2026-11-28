@@ -238,9 +238,11 @@ class CSVReaderNode(BaseNode):
                 default="",
                 description=(
                     "CSV file to read. Pick one you uploaded from the dropdown, "
-                    "or type a path (absolute, or relative to the backend "
-                    "working dir; in project mode, relative paths resolve "
-                    "inside the project directory)."
+                    "or type a path: a bundled sample as data/samples/<name> "
+                    "(data/samples/iris.csv, data/samples/digits.csv), which "
+                    "works in every mode, or a path relative to the project "
+                    "(project mode) or the backend working dir, or an "
+                    "absolute path."
                 ),
             ),
             ParamDefinition(

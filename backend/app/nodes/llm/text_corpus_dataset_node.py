@@ -241,9 +241,11 @@ class TextCorpusDatasetNode(BaseNode):
                 default="",
                 description=(
                     "Text file to read. Pick one you uploaded from the "
-                    "dropdown, or type a path (absolute, or relative to the "
-                    "backend working dir; in project mode, relative paths "
-                    "resolve inside the project directory)."
+                    "dropdown, or type a path: a bundled sample as "
+                    "data/samples/<name> (data/samples/mix/facts.txt), which "
+                    "works in every mode, or a path relative to the project "
+                    "(project mode) or the backend working dir, or an "
+                    "absolute path."
                 ),
                 visible_when={"source": "local_file"},
             ),
