@@ -1,10 +1,11 @@
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
 import { useI18n } from '../../i18n';
 import { openExample } from '../../utils/openExample';
 import { useTabStore } from '../../store/tabStore';
 import { useUIStore } from '../../store/uiStore';
 import type { ExampleSummary } from '../../api/rest';
 import { ExampleBrowser } from '../shared/ExampleBrowser';
+import { useScrollEdges } from '../shared/useScrollEdges';
 import styles from './EmptyCanvasOverlay.module.css';
 
 interface EmptyCanvasOverlayProps {
@@ -47,6 +48,9 @@ export function EmptyCanvasOverlay({ onDragOver, onDrop, onDismiss }: EmptyCanva
   // instead, because they are reachable while a graph is on screen. The
   // welcome screen is the other non-replacing reader -- it has no tab at all,
   // so it opens into a new one.
+  const innerRef = useRef<HTMLDivElement | null>(null);
+  const edges = useScrollEdges(innerRef, 'y');
+
   const handleClick = useCallback(
     (example: ExampleSummary) => void openExample(example.path),
     [],
@@ -66,7 +70,7 @@ export function EmptyCanvasOverlay({ onDragOver, onDrop, onDismiss }: EmptyCanva
           <div className={styles.blockNoteHint}>{t('subgraph.emptyLevel.hint')}</div>
         </div>
       ) : (
-        <div className={styles.inner}>
+        <div ref={innerRef} className={styles.inner} data-more-below={edges.end || undefined}>
           <div className={styles.title}>{t('empty.title')}</div>
           <div className={styles.subtitle}>{t('empty.subtitle')}</div>
 

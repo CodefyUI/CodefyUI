@@ -20,8 +20,11 @@
      capped a wide monitor at four per row and left the gallery a narrow
      column down the middle of the screen with the canvas showing either side
      of it. `width: 90%` still governs on anything smaller, so a laptop is
-     unaffected -- this only spends room that was already empty. */
-  max-width: 1100px;
+     unaffected -- this only spends room that was already empty.
+     Since phase 5 it is six of the 12rem cards, their gaps and the side
+     padding, in the cards' own units, so a 1080p window shows a sixth
+     column at whatever root size. */
+  max-width: calc(6 * 12rem + 5 * var(--sp-3) + 2 * var(--sp-6));
   width: 90%;
   max-height: 90%;
   overflow-y: auto;
@@ -29,28 +32,38 @@
   box-sizing: border-box;
 }
 
+/* Cards cut off at the bottom (phase 5): the last 32px fade out, which says
+   there is more to scroll to. Only while there is (EmptyCanvasOverlay.tsx
+   sets the attribute from the scroll position), so a list that fits ends on
+   a hard edge. */
+.inner[data-more-below] {
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 32px), transparent);
+}
+
 /* The first thing a new user sees — a real heading, not faded placeholder
    text. Was #555 at 1.25rem (2.66:1); now the primary text tier at the hero
    size, which is what a deliberate empty state calls for. */
 .title {
-  font-size: var(--fs-3xl);
+  /* 22px, not the 28px hero size, and half the space under it (phase 5):
+     the block above the cards was ~260px at 13 inch. */
+  font-size: var(--fs-2xl);
   font-weight: var(--fw-bold);
   line-height: var(--lh-snug);
   color: var(--text-primary);
-  margin-bottom: var(--sp-4);
+  margin-bottom: var(--sp-2);
 }
 
 .subtitle {
   font-size: var(--fs-lg);
   line-height: var(--lh-normal);
   color: var(--text-secondary);
-  margin-bottom: var(--sp-6);
+  margin-bottom: var(--sp-4);
 }
 
 /* Entry into the full gallery modal (core#128). */
 .browseButton {
-  margin-bottom: var(--sp-7);
-  padding: var(--sp-3) var(--sp-5);
+  margin-bottom: var(--sp-4);
+  padding: var(--sp-2) var(--sp-4);
   background: var(--accent-wash);
   border: 1px solid var(--accent-dim);
   border-radius: var(--radius);

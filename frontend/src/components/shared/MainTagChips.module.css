@@ -2,18 +2,49 @@
    example cards and beside the gallery search. A chip always carries its name;
    the accent dot only repeats it. */
 
+/* One row (phase 5). It wrapped to two at 13 inch and pushed the cards
+   down; it scrolls sideways now -- by wheel too (MainTagChips.tsx) -- with a
+   fade on each edge that has more beyond it. The scrollbar is hidden: the
+   fade says there is more, and a 12px bar under 24px chips looked like a
+   rule. position: relative makes the row the chips' offsetParent, which the
+   scroll-into-view maths reads. */
 .row {
+  position: relative;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: var(--sp-2);
-  margin-bottom: var(--sp-4);
+  margin-bottom: var(--sp-3);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
+  /* Room for the focus ring, which the overflow would otherwise clip. */
+  padding: 3px 2px;
+}
+
+.row::-webkit-scrollbar {
+  display: none;
+}
+
+.row[data-fade-start] {
+  mask-image: linear-gradient(to right, transparent, #000 24px);
+}
+
+.row[data-fade-end] {
+  mask-image: linear-gradient(to left, transparent, #000 24px);
+}
+
+.row[data-fade-start][data-fade-end] {
+  mask-image: linear-gradient(to right, transparent, #000 24px, #000 calc(100% - 24px), transparent);
 }
 
 .chip {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
-  padding: var(--sp-1) var(--sp-3);
+  /* 4px a side, not 8 (phase 5); the text stays 12px. */
+  padding: var(--sp-1) var(--sp-2);
+  flex: none;
   border: 1px solid var(--border-strong);
   border-radius: 999px;
   background: var(--surface-raised);

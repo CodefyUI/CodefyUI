@@ -7,13 +7,14 @@
    heading that names it. */
 .quickStartGrid {
   display: flex;
-  gap: var(--sp-4);
+  /* 8px between cards, not 12 (phase 5). */
+  gap: var(--sp-3);
   justify-content: flex-start;
   flex-wrap: wrap;
 }
 
 .section {
-  margin-bottom: var(--sp-6);
+  margin-bottom: var(--sp-5);
 }
 
 /* The overlay used to end on a hint line, so the last section's margin sat
@@ -59,7 +60,8 @@
   background: var(--surface-raised);
   border: 1px solid var(--border-base);
   border-radius: var(--radius-lg);
-  padding: var(--sp-4) var(--sp-5);
+  /* 8px 12px, not 12px 16px (phase 5). */
+  padding: var(--sp-3) var(--sp-4);
   cursor: pointer;
   /* rem, not a literal 200px: the root font-size is
      clamp(16px, 0.1vw + 14.5px, 16.5px) (App.css), so on a wide screen the name
@@ -67,8 +69,9 @@
      width is not — the card shrinks against its own type. 13rem is 208px at
      a 16px root and tracks the type from there, and matches the gallery
      modal's grid track so the same example is the same size on both
-     surfaces. */
-  width: 13rem;
+     surfaces. 12rem since phase 5 (192px at 16px): a fifth card per row at
+     13 inch. */
+  width: 12rem;
   text-align: left;
   /* A column, so .presetCardFooter can claim the leftover height with
      margin-top: auto and land at the same place on every card in the row. */
@@ -81,7 +84,7 @@
   display: flex;
   align-items: center;
   gap: var(--sp-3);
-  margin-bottom: var(--sp-3);
+  margin-bottom: var(--sp-2);
 }
 
 .presetCardName {
@@ -130,7 +133,7 @@
      one row, because a name is one line or two and a description likewise.
      The gallery modal's .cardFooter is pinned for the same reason. */
   margin-top: auto;
-  padding-top: var(--sp-3);
+  padding-top: var(--sp-2);
 }
 
 /* Difficulty badge — bg and color are dynamic (DIFFICULTY_COLORS) — set inline */

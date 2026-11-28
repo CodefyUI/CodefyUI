@@ -1,9 +1,46 @@
-import { useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { useI18n } from '../../i18n';
 import { mainTagLabel } from '../../utils/exampleSections';
 import type { MainTagEntry } from '../../utils/useExampleCatalog';
 import { EXAMPLE_CATEGORY_FALLBACK, EXAMPLE_SECTION_COLORS } from '../../styles/theme';
+import { useScrollEdges } from './useScrollEdges';
 import styles from './MainTagChips.module.css';
+
+/** The width of an edge fade: a chip scrolled into view clears it. */
+const FADE_PX = 24;
+
+/**
+ * A vertical wheel turn over the strip, as the sideways scroll it can do
+ * (phase 5). Returns how far to move, or 0 to leave the event to the page:
+ * a sideways gesture (trackpad) scrolls the strip natively, and a strip
+ * already at the end in that direction lets the page scroll on.
+ */
+export function wheelToScroll(
+  event: { deltaX: number; deltaY: number; deltaMode: number },
+  box: { scrollLeft: number; scrollWidth: number; clientWidth: number },
+): number {
+  if (Math.abs(event.deltaX) >= Math.abs(event.deltaY) || event.deltaY === 0) return 0;
+  // deltaMode 1 is lines, 2 pages; 0 (pixels) is what most mice send.
+  const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? box.clientWidth : 1;
+  const delta = event.deltaY * unit;
+  const max = box.scrollWidth - box.clientWidth;
+  if (delta < 0 && box.scrollLeft <= 0) return 0;
+  if (delta > 0 && box.scrollLeft >= max - 1) return 0;
+  return delta;
+}
+
+/** Where to scroll the strip so `chip` is in view clear of the fades, or
+ * null when it already is. */
+export function scrollToShow(
+  chip: { offsetLeft: number; offsetWidth: number },
+  box: { scrollLeft: number; clientWidth: number },
+): number | null {
+  const left = chip.offsetLeft - FADE_PX;
+  const right = chip.offsetLeft + chip.offsetWidth + FADE_PX;
+  if (left < box.scrollLeft) return Math.max(0, left);
+  if (right > box.scrollLeft + box.clientWidth) return right - box.clientWidth;
+  return null;
+}
 
 /** The value of the chip row: a main tag id, or every main tag at once. */
 export const ALL_MAIN_TAGS = 'all';
@@ -34,6 +71,34 @@ export function mainTagTabId(idPrefix: string, value: string): string {
 export function MainTagChips({ entries, value, onChange, idPrefix, panelId }: MainTagChipsProps) {
   const { t } = useI18n();
   const refs = useRef(new Map<string, HTMLButtonElement>());
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  const edges = useScrollEdges(rowRef, 'x');
+
+  // One row that scrolls sideways (phase 5): a mouse wheel scrolls it too.
+  // A native listener, because React's onWheel is passive and cannot stop
+  // the page from scrolling at the same time.
+  useEffect(() => {
+    const row = rowRef.current;
+    if (!row) return undefined;
+    const onWheel = (event: WheelEvent) => {
+      const delta = wheelToScroll(event, row);
+      if (delta === 0) return;
+      event.preventDefault();
+      row.scrollLeft += delta;
+    };
+    row.addEventListener('wheel', onWheel, { passive: false });
+    return () => row.removeEventListener('wheel', onWheel);
+  }, []);
+
+  // The selected chip is always in view: on mount (a remembered chip far
+  // down the row), on a click, and on an arrow key.
+  useEffect(() => {
+    const row = rowRef.current;
+    const chip = refs.current.get(value);
+    if (!row || !chip) return;
+    const target = scrollToShow(chip, row);
+    if (target !== null) row.scrollLeft = target;
+  }, [value, entries]);
   const total = entries.reduce((sum, entry) => sum + entry.count, 0);
   const values = [ALL_MAIN_TAGS, ...entries.map((entry) => entry.id)];
 
@@ -80,7 +145,14 @@ export function MainTagChips({ entries, value, onChange, idPrefix, panelId }: Ma
   };
 
   return (
-    <div role="tablist" aria-label={t('examples.filter.mainTags')} className={styles.row}>
+    <div
+      ref={rowRef}
+      role="tablist"
+      aria-label={t('examples.filter.mainTags')}
+      className={styles.row}
+      data-fade-start={edges.start || undefined}
+      data-fade-end={edges.end || undefined}
+    >
       {chip(ALL_MAIN_TAGS, t('examples.filter.all'), total, null)}
       {entries.map((entry) =>
         chip(
