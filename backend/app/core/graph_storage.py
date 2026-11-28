@@ -705,7 +705,7 @@ class GraphStore:
         dst_existing = self.resolve(dst_stem, dst_display)
         if not src.exists():
             raise GraphNotFound(src_stem, src_display)
-        if dst_existing.exists() and dst_existing != src \
+        if dst_existing.exists() and not _same_spelling(dst_existing, src) \
                 and not _same_entry(dst_existing, src):
             raise GraphExists(dst_stem, f"Graph '{dst_display or dst_stem}' already exists")
         # A layout can outlive its graph (a checkout of `graphs/` alone, a
@@ -713,7 +713,8 @@ class GraphStore:
         # here, before anything has moved.
         layout_src = self.layout_path(src_stem)
         layout_dst = self.layout_path(dst_stem)
-        if layout_dst is not None and layout_dst != layout_src and layout_dst.exists() \
+        if layout_dst is not None and not _same_spelling(layout_dst, layout_src) \
+                and layout_dst.exists() \
                 and not (layout_src is not None and _same_entry(layout_dst, layout_src)):
             raise LayoutOrphanExists(
                 dst_stem,
@@ -723,7 +724,7 @@ class GraphStore:
         if src.is_dir():
             self._rename_folder(src_stem, dst_stem, new_name, src_display)
             if (layout_src is not None and layout_dst is not None
-                    and layout_dst != layout_src and layout_src.exists()):
+                    and not _same_spelling(layout_dst, layout_src) and layout_src.exists()):
                 layout_dst.parent.mkdir(parents=True, exist_ok=True)
                 _move(layout_src, layout_dst)
             return
@@ -746,12 +747,12 @@ class GraphStore:
         # under its old name; a failed rewrite leaves it whole under the new
         # one, only still titled the old one. The trailing newline is kept as
         # found so a rename is not also a last-line change in git.
-        if dst != src:
+        if not _same_spelling(dst, src):
             _move(src, dst)
         _atomic_write(
             dst, json.dumps(data, indent=2) + ("\n" if raw.endswith("\n") else ""))
         if (layout_src is not None and layout_dst is not None
-                and layout_dst != layout_src and layout_src.exists()):
+                and not _same_spelling(layout_dst, layout_src) and layout_src.exists()):
             layout_dst.parent.mkdir(parents=True, exist_ok=True)
             _move(layout_src, layout_dst)
 
@@ -771,7 +772,7 @@ class GraphStore:
         if index.get("storage_version") != STORAGE_VERSION:
             raise NewerStorageVersion(src_stem, index.get("storage_version"))
         dst = self.folder(dst_stem)
-        if dst != src:
+        if not _same_spelling(dst, src):
             _move(src, dst)
         index["name"] = new_name
         first = [(k, index.pop(k)) for k in ("storage_version", "format_version",
@@ -824,11 +825,25 @@ def _same_entry(a: Path, b: Path) -> bool:
         return False
 
 
+def _same_spelling(a: Path | None, b: Path | None) -> bool:
+    """Are *a* and *b* spelled the same, character for character?
+
+    Not ``a == b``: ``WindowsPath`` compares case-insensitively, so on
+    Windows ``graphs/beta == graphs/Beta`` is True and every "did the name
+    change?" test in a rename answered "no" -- a case-only rename moved
+    nothing (Windows CI, phase 4B round 2). The question these callers ask
+    is about the spelling, which a string comparison answers on every OS.
+    """
+    if a is None or b is None:
+        return a is b
+    return _os.fspath(a) == _os.fspath(b)
+
+
 def _move(src: Path, dst: Path) -> None:
     """``src.replace(dst)``, including a change of letter case only: that
     goes through a temporary name, since a filesystem that ignores case can
     treat the direct rename as a no-op."""
-    if src != dst and _same_entry(src, dst):
+    if not _same_spelling(src, dst) and _same_entry(src, dst):
         tmp = src.with_name(f"{src.name}.rename-tmp-{_os.getpid()}")
         src.replace(tmp)
         tmp.replace(dst)

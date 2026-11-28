@@ -226,3 +226,41 @@ def test_a_node_file_is_not_taken_for_a_graph(project):  # noqa: F811
     GraphStore.current().write("demo", _payload())
     with pytest.raises(ValueError, match="one file of the graph folder"):
         gs.load_graph_document(project / "graphs" / "demo" / "nodes" / "ds.json")
+
+
+class _WindowsLikePath(type(Path())):
+    """A local path that compares like ``WindowsPath``: case-insensitively.
+    That equality is what made the case-only rename a no-op on Windows CI
+    while it passed on APFS; with it this machine reproduces the bug."""
+
+    def __eq__(self, other):
+        return isinstance(other, Path) and str(self).casefold() == str(other).casefold()
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+    def __hash__(self):
+        return hash(str(self).casefold())
+
+
+def test_same_spelling_does_not_trust_windows_path_equality():
+    from pathlib import PureWindowsPath
+
+    assert PureWindowsPath("graphs/beta") == PureWindowsPath("graphs/Beta")
+    assert not gs._same_spelling(PureWindowsPath("graphs/beta"), PureWindowsPath("graphs/Beta"))
+    assert gs._same_spelling(PureWindowsPath("graphs/beta"), PureWindowsPath("graphs/beta"))
+
+
+@pytest.mark.parametrize("fmt", ["dir", "file"])
+def test_a_case_only_rename_with_windows_path_equality(tmp_path, fmt):
+    if not _case_insensitive(tmp_path):
+        pytest.skip("the filesystem is case-sensitive")
+    root = _WindowsLikePath(tmp_path)
+    assert root / "graphs" / "beta" == root / "graphs" / "Beta"
+    store = GraphStore(root / "graphs", root / "layout", new_graph_format=fmt)
+    store.write("beta", _payload(name="beta"))
+    store.rename("beta", "Beta", new_name="Beta")
+    names = sorted(p.name for p in (tmp_path / "graphs").iterdir())
+    assert names == (["Beta"] if fmt == "dir" else ["Beta.graph.json"])
+    assert sorted(p.name for p in (tmp_path / "layout").iterdir()) == ["Beta.layout.json"]
+    assert store.read("Beta")["name"] == "Beta"
