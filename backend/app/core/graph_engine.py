@@ -1739,10 +1739,15 @@ def validate_graph(
             continue
         node_cls = registry.get(node_type)
         if node_cls is None:
+            from .mods import unloaded_reason
+
+            why = unloaded_reason(node_type)
             errors.append(validation_issue(
                 "unknown_node_type",
-                f"Unknown node type: {node_type} (node {node['id']})",
+                f"Unknown node type: {node_type} (node {node['id']})"
+                + (f" -- {why}" if why else ""),
                 node_id=node["id"], type=node_type,
+                **({"reason": "mods_not_loaded"} if why else {}),
             ))
         else:
             valid_node_ids.add(node["id"])
@@ -3238,7 +3243,11 @@ async def execute_graph(
 
         node_cls = registry.get(node_type)
         if not node_cls:
-            raise GraphValidationError(f"Unknown node type: {node_type}")
+            from .mods import unloaded_reason
+
+            why = unloaded_reason(node_type)
+            raise GraphValidationError(f"Unknown node type: {node_type}"
+                                       + (f" -- {why}" if why else ""))
 
         # Gather inputs from upstream edges. Each input has at most one
         # (prepare_executable_graph refuses more, #658), so nothing here

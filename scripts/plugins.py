@@ -1024,7 +1024,7 @@ def _plain(text: object, limit: int = 200) -> str:
     return cleaned[:limit].rstrip() + "..."
 
 
-def _print_preview(found: core_inspect.Inspection) -> None:
+def _print_preview(found: core_inspect.Inspection, consent_flag: str = "--trust-author") -> None:
     """Say what this plugin IS, before a byte of it is downloaded.
 
     The whole reason the manifest is read from ``raw.githubusercontent.com``
@@ -1059,9 +1059,9 @@ def _print_preview(found: core_inspect.Inspection) -> None:
             _plain(module, limit=80) for module in found.allowed_modules
         )
         warn(
-            f"此外掛要求關閉白名單以匯入：{asked}（需要 --trust-author）",
+            f"此外掛要求關閉白名單以匯入：{asked}（需要 {consent_flag}）",
             f"This plugin asks to import, outside the allowlist: {asked} "
-            f"(needs --trust-author)",
+            f"(needs {consent_flag})",
         )
     _print_python_deps(found)
     if found.has_frontend:
@@ -1662,7 +1662,9 @@ def _install_inspected(
         )
         return 1
 
-    _print_preview(found)
+    # `cdui project restore` consents with --yes (or the prompt below), not
+    # --trust-author, which it does not have.
+    _print_preview(found, getattr(args, "consent_flag", "--trust-author"))
 
     if not args.no_confirm:
         try:

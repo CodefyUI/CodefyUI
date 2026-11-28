@@ -112,8 +112,9 @@
                 專案目錄：一個 git repo 就是服務的儲存空間（codefyui.project.toml）。
                     cdui project init <dir> [--adopt <舊 graphs 目錄>] [--force]
                     cdui project validate <dir> [--graph <名稱>]... [--strict]
-                    cdui project freeze <dir>           # 把已安裝外掛的 SHA 寫進 manifest
-                    cdui project restore <dir>          # 依 manifest 的 SHA 安裝外掛
+                    cdui project freeze <dir> [--used-only]  # 把外掛的 SHA 與 [mods] 寫進 manifest
+                    cdui project restore <dir> [--yes]  # 依 manifest 的 SHA 安裝外掛（新的要確認）
+                    cdui project mods <dir> [--trust [--yes] [--full]] [--write]  # 掃描、信任專案的 mods/
                     cdui project publish <dir> [--graph] [--slug] [--note] [--create]
                 詳見文件的 Project Directories 頁。
 

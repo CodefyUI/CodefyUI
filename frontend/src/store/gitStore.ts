@@ -992,6 +992,12 @@ async function runOp(
     if (said !== null && SUCCESS_TOAST_OPS.has(op)) toast(said, 'success');
     if (opts.worktree === true && 'status' in result) {
       useGitStore.getState().applyWorktreeChange(result.changed_paths);
+      // A pull, merge, checkout, stash or discard can change mods/ under the
+      // code that is running: re-read the project's status so the editor
+      // says so (phase 4C). Nothing is reloaded; the user checks it.
+      if (useProjectStore.getState().projectDir !== null) {
+        void useProjectStore.getState().loadOverview();
+      }
     }
     if (opts.refs !== undefined) {
       await Promise.all(opts.refs.map((kind) => useGitStore.getState().refreshRefs(kind)));

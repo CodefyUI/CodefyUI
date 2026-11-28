@@ -420,3 +420,159 @@
   outline: none;
   box-shadow: var(--focus-ring);
 }
+
+/* ── the mods/ trust prompt (phase 4C) ── */
+
+.dialogWide {
+  --dialog-width: 680px;
+}
+
+.modsWarning {
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text-primary);
+  background: var(--warning-wash);
+  border-left: 3px solid var(--status-warning);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+}
+
+.modsList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  max-height: 40vh;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.modsRow {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.modsHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-3);
+}
+
+.modsPath {
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+
+.modsFacts {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chipRestart {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  color: var(--status-warning);
+}
+
+.modsRowNever {
+  opacity: 0.75;
+}
+
+.modsNever {
+  padding: 0 var(--sp-2);
+  color: var(--text-muted);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-xs);
+}
+
+/* ── mods/ changed on disk (not blocking: the page stays usable) ── */
+
+.modsDiskBanner {
+  position: fixed;
+  top: calc(var(--sp-8) + var(--sp-6));
+  left: 50%;
+  z-index: 8800;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  max-width: min(720px, calc(100vw - var(--sp-8)));
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text-primary);
+  background: var(--surface-panel);
+  border: 1px solid var(--status-warning);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  font-size: var(--fs-sm);
+  transform: translateX(-50%);
+}
+
+.modsDiskBanner button {
+  min-height: var(--h-control-sm);
+  padding: 0 var(--sp-3);
+  color: var(--text-primary);
+  background: transparent;
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.modsDiskBanner button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* ── the tab banner: a graph uses mods that are not loaded ── */
+
+.modsBanner {
+  position: absolute;
+  /* The bottom: the subgraph breadcrumb owns the top centre. */
+  bottom: var(--sp-6);
+  left: 50%;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  max-width: min(720px, calc(100% - var(--sp-8)));
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text-primary);
+  background: var(--surface-panel);
+  border: 1px solid var(--status-warning);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  font-size: var(--fs-sm);
+  transform: translateX(-50%);
+}
+
+.modsBanner button {
+  min-height: var(--h-control-sm);
+  padding: 0 var(--sp-3);
+  color: var(--text-primary);
+  background: transparent;
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.modsBanner button:hover {
+  background: var(--surface-hover);
+}
+
+.modsBanner button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}

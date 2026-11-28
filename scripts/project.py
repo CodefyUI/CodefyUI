@@ -3,7 +3,7 @@ scripts/dev.py's _dispatch_project_subcommand hop, so `import app.*` works.
 
 This module mirrors scripts/plugins.py: a build_parser() with subcommands, a
 main(argv) that dispatches to args._func. This file ships `init`, `validate`, `migrate`, `git-setup`,
-`freeze`, `restore`, and `publish`.
+`freeze`, `restore`, `mods`, and `publish`.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from plugins import (
     _install_github,
     _read_session_token,
     _reconfigure_stdio,
+    _stdin_is_interactive,
     err,
     info,
     ok,
@@ -92,10 +93,12 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
-def _init_registries_like_server() -> None:
+def _init_registries_like_server(proj: Path | None = None) -> dict | None:
     """Discover builtin + custom + PLUGIN nodes and presets exactly like the
     server lifespan (main.py) -- run_graph.py's init loads no plugins and is
-    NOT sufficient (spec ID3)."""
+    NOT sufficient (spec ID3). With *proj*, also that project's mods/, but
+    only when the trust record matches the tree exactly (phase 4C); returns
+    the mods status then."""
     import app.core.plugin_loader as plugin_loader
     from app.config import settings
     from app.core.node_registry import registry
@@ -112,6 +115,11 @@ def _init_registries_like_server() -> None:
     preset_registry.discover(settings.USER_PRESETS_DIR, registry)
     for _pid, pdir in iter_plugin_dirs(builtin_root, user_root, lockfile):
         preset_registry.discover(pdir / "presets", registry)
+    if proj is None:
+        return None
+    from app.core import mods
+
+    return mods.load_project_mods(proj, cli=True)
 
 
 def _validate_one_graph(store, base: str) -> list[str]:
@@ -201,7 +209,7 @@ def _validate_one_graph(store, base: str) -> list[str]:
     errors = validate_graph(nodes, edges, preset_fallback=fb)
     if errors:
         first = errors[0]
-        if first.startswith("Unknown node type"):
+        if first.startswith("Unknown node type") and " -- " not in first:
             first = first + " -- run `cdui project restore` (or install the plugin that provides it)"
         return [f"invalid_graph: {first}"]
     return []
@@ -269,7 +277,13 @@ def cmd_validate(args: argparse.Namespace) -> int:
         err(f"manifest 解析失敗：{e}", f"Manifest parse error: {e}")
         return 1
 
-    _init_registries_like_server()
+    mods_status = _init_registries_like_server(proj) or {}
+    state = mods_status.get("state", "none")
+    if state in ("untrusted", "changed", "blocked"):
+        warn(f"mods/ 未載入（{state}）；用到 project: 節點的 graph 會失敗。"
+             "檢視並信任：cdui project mods --trust",
+             f"mods/ is not loaded ({state}); graphs that use project: nodes "
+             "will fail. Review and trust it with: cdui project mods --trust")
 
     from app.core.graph_storage import GraphStore
 
@@ -312,6 +326,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
     pin_fail = _check_pins(manifest, args.strict)
     env_fail = _check_env_not_tracked(proj)
+    _check_mods_block(proj, manifest)
 
     if not all_ok or pin_fail or env_fail:
         err("驗證失敗", "Validation FAILED")
@@ -353,72 +368,124 @@ def _toml_value(value: object) -> str:
     raise TypeError(f"unsupported TOML value type: {type(value).__name__}")
 
 
-def _render_extra_table(header: str, table: dict) -> list[str]:
-    """Render a user-owned table freeze knows nothing about as a [header]
-    section, nested dicts becoming [header.sub] sections (document order)."""
-    lines = [f"[{header}]"]
-    subtables = []
-    for k, v in table.items():
-        if isinstance(v, dict):
-            subtables.append((k, v))
-        else:
-            lines.append(f"{_toml_key(k)} = {_toml_value(v)}")
-    lines.append("")
-    for k, v in subtables:
-        lines.extend(_render_extra_table(f"{header}.{_toml_key(k)}", v))
-    return lines
+_TABLE_HEADER = __import__("re").compile(r"^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(#.*)?$")
 
 
-def _render_manifest(manifest: dict, pins: dict) -> str:
-    """Regenerate the manifest with a machine-written [plugins] table (spec 5)
-    while round-tripping every key freeze does not own (#87): unknown top-level
-    keys/tables and unknown keys inside [project]/[publish] are preserved in
-    document order. tomllib discards comments, so comments are NOT preserved.
-    [plugins] is a generated section: its content is replaced wholesale."""
-    project_tbl = manifest.get("project", {}) or {}
-    publish = manifest.get("publish", {}) or {}
-    extras = {k: v for k, v in manifest.items()
-              if k not in ("project", "plugins", "publish")}
+def _set_toml_table(text: str, header: str, body: list[str] | None) -> str:
+    """*text* with the table ``[header]`` holding exactly *body* (lines),
+    edited in place: every other line -- comments included -- stays as it
+    was, and a comment line right under the header is kept with it. A new
+    table goes at the end; ``body=None`` removes the table."""
+    lines = text.splitlines()
+    start = None
+    for i, line in enumerate(lines):
+        m = _TABLE_HEADER.match(line)
+        if m and m.group(1) == header and not line.lstrip().startswith("[["):
+            start = i
+            break
+    if start is None:
+        if body is None:
+            return text
+        out = text.rstrip("\n")
+        return (out + "\n\n" if out else "") + "\n".join([f"[{header}]", *body]) + "\n"
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        if _TABLE_HEADER.match(lines[j]):
+            end = j
+            break
+    # The blank lines and comments that come before the next table belong
+    # to it, not to this one.
+    tail = end
+    while tail > start + 1 and (not lines[tail - 1].strip()
+                                or lines[tail - 1].lstrip().startswith("#")):
+        tail -= 1
+    if body is None:
+        new = lines[:start] + lines[tail:]
+        while new and not new[-1].strip():
+            new.pop()
+        return "\n".join(new) + "\n" if new else ""
+    keep = []
+    k = start + 1
+    while k < tail and lines[k].lstrip().startswith("#"):
+        if lines[k] not in body:   # the writer's own note is in *body* already
+            keep.append(lines[k])
+        k += 1
+    gap = [""] if tail < len(lines) else []
+    new = lines[:start + 1] + keep + body + gap + lines[tail:]
+    # Never two blank lines where one was.
+    out: list[str] = []
+    for line in new:
+        if not line.strip() and out and not out[-1].strip():
+            continue
+        out.append(line)
+    return "\n".join(out).rstrip("\n") + "\n"
 
-    lines: list[str] = []
-    # Root-level (non-table) keys must precede the first [table] header.
-    root_scalars = [(k, v) for k, v in extras.items() if not isinstance(v, dict)]
-    for k, v in root_scalars:
-        lines.append(f"{_toml_key(k)} = {_toml_value(v)}")
-    if root_scalars:
-        lines.append("")
-    lines.append("[project]")
-    lines.append(f'name = "{project_tbl.get("name", "")}"')
-    lines.append(f'format_version = {int(project_tbl.get("format_version", 1))}')
-    if project_tbl.get("requires_codefyui"):
-        lines.append(f'requires_codefyui = "{project_tbl["requires_codefyui"]}"')
-    for k, v in project_tbl.items():
-        if k not in ("name", "format_version", "requires_codefyui"):
-            lines.append(f"{_toml_key(k)} = {_toml_value(v)}")
-    lines.append("")
-    lines.append("[plugins]")
-    lines.append("# written by `cdui project freeze`; installed by `cdui project restore`")
+
+def _plugins_table_body(pins: dict) -> list[str]:
+    body = ["# written by `cdui project freeze`; installed by `cdui project restore`"]
     for pid in sorted(pins):
         p = pins[pid]
-        lines.append(
-            f'{pid} = {{ url = "{p["url"]}", ref = "{p["ref"]}", '
-            f'sha = "{p["sha"]}" }}')
-    lines.append("")
-    if publish:
-        lines.append("[publish]")
-        for k in ("graph", "slug"):
-            if publish.get(k):
-                lines.append(f'{k} = "{publish[k]}"')
-        if "record_io" in publish:
-            lines.append(f'record_io = {"true" if publish["record_io"] else "false"}')
-        for k, v in publish.items():
-            if k not in ("graph", "slug", "record_io"):
-                lines.append(f"{_toml_key(k)} = {_toml_value(v)}")
-        lines.append("")
-    for k, v in extras.items():
-        if isinstance(v, dict):
-            lines.extend(_render_extra_table(_toml_key(k), v))
-    return "\n".join(lines) + "\n"
+        body.append(f'{pid} = {{ url = "{p["url"]}", ref = "{p["ref"]}", '
+                    f'sha = "{p["sha"]}" }}')
+    return body
+
+
+def _mods_table(proj: Path) -> dict:
+    """What ``[mods]`` should say about *proj*'s mods/: per file its sha256
+    and, for a node file, the node names it defines (read from the source);
+    for a preset, its name. Informational: never used for trust."""
+    from app.core import mods
+
+    tree = mods.walk_mods(proj)
+    table: dict = {}
+    for rel in sorted(tree.files):
+        f = tree.files[rel]
+        entry: dict = {"sha256": f.sha256}
+        if f.role == "node":
+            entry["nodes"] = mods._node_names(
+                mods._read_no_follow(tree.root / rel).decode("utf-8", "replace"))
+        elif f.role == "preset":
+            try:
+                name = json.loads(mods._read_no_follow(tree.root / rel)).get("preset_name")
+            except (ValueError, OSError, AttributeError):
+                name = None
+            if isinstance(name, str):
+                entry["preset"] = name
+        table[rel] = entry
+    return table
+
+
+def _mods_table_body(table: dict) -> list[str]:
+    body = ["# written by `cdui project freeze` / `cdui project mods --write`; "
+            "informational, never used for trust"]
+    for rel, entry in table.items():
+        body.append(f"{json.dumps(rel)} = {_toml_value(entry)}")
+    return body
+
+
+def _write_mods_block(manifest_path: Path, proj: Path) -> int:
+    """Rewrite ``[mods]`` in place; returns how many files it lists."""
+    table = _mods_table(proj)
+    text = manifest_path.read_text(encoding="utf-8")
+    text = _set_toml_table(text, "mods", _mods_table_body(table) if table else None)
+    manifest_path.write_bytes(text.encode("utf-8"))
+    return len(table)
+
+
+def _check_mods_block(proj: Path, manifest: dict) -> bool:
+    """Warn when the manifest's ``[mods]`` does not describe mods/ as it
+    is (a stale block misleads a reviewer). A warning, never a failure, and
+    never a trust decision. True when it was stale."""
+    listed = manifest.get("mods")
+    actual = _mods_table(proj)
+    if listed is None and not actual:
+        return False
+    if listed == actual:
+        return False
+    warn("manifest 的 [mods] 與 mods/ 不符；更新：cdui project mods --write",
+         "The manifest's [mods] does not match mods/; update it with: "
+         "cdui project mods --write")
+    return True
 
 
 def _set_manifest_graph_format(manifest_path: Path, fmt: str) -> None:
@@ -538,17 +605,55 @@ def cmd_git_setup(args: argparse.Namespace) -> int:
     return 0
 
 
+def _used_plugin_ids(proj: Path) -> tuple[set[str], list[str]]:
+    """The plugin ids the project's graphs use (read off the qualified node
+    types, so a plugin that is not installed still counts), and the graphs
+    that could not be read (which fail the command: a pin set must not
+    shrink silently)."""
+    from app.core.graph_storage import GraphStore, _node_types
+
+    store = GraphStore.for_project(proj)
+    used: set[str] = set()
+    unreadable: list[str] = []
+    for stem in store.stems():
+        try:
+            if store.storage_of(stem) == "dir":
+                logic, _repairs = store.read_folder(stem)
+            else:
+                logic = store.read_logic(stem)
+        except Exception as e:  # noqa: BLE001 -- reported, then the command fails
+            unreadable.append(f"{stem}: {e}")
+            continue
+        for node_type in _node_types(logic):
+            prefix, sep, _name = str(node_type).partition(":")
+            if sep and prefix not in ("project", "subgraph"):
+                used.add(prefix)
+    return used, unreadable
+
+
 def cmd_freeze(args: argparse.Namespace) -> int:
     proj = Path(args.dir).expanduser().resolve()
     manifest_path = proj / MANIFEST_FILENAME
-    from app.core.plugin_loader import tomllib
     if not manifest_path.exists():
         err(f"找不到 manifest：{manifest_path}", f"Manifest not found: {manifest_path}")
         return 1
-    manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
     section("凍結外掛版本", "Freezing plugin pins")
+    used = None
+    if getattr(args, "used_only", False):
+        try:
+            used, unreadable = _used_plugin_ids(proj)
+        except GraphAmbiguityError as e:
+            err(str(e), str(e))
+            return 1
+        if unreadable:
+            for line in unreadable:
+                err(f"無法讀取 graph：{line}", f"Cannot read graph: {line}")
+            return 1
+    lock = load_lockfile().get("plugins", {})
     pins: dict = {}
-    for pid, entry in load_lockfile().get("plugins", {}).items():
+    for pid, entry in lock.items():
+        if used is not None and pid not in used:
+            continue  # installed, but no graph here uses it
         kind = entry.get("source_kind")
         if kind in ("local", "local_copy"):
             warn(f"略過本地連結或本機來源：{pid}",
@@ -562,9 +667,17 @@ def cmd_freeze(args: argparse.Namespace) -> int:
             continue
         pins[pid] = {"url": url, "ref": ref, "sha": sha}
         ok(f"釘選 {pid} @ {sha[:7]}", f"Pinned {pid} @ {sha[:7]}")
-    manifest_path.write_text(
-        _render_manifest(manifest, pins), encoding="utf-8")
+    for pid in sorted((used or set()) - set(lock)):
+        warn(f"{pid} 有 graph 使用但沒有安裝，無法釘選",
+             f"{pid} is used by a graph but not installed here; it cannot be pinned")
+    # In place: the user's comments and every table freeze does not own stay.
+    text = manifest_path.read_text(encoding="utf-8")
+    text = _set_toml_table(text, "plugins", _plugins_table_body(pins))
+    manifest_path.write_bytes(text.encode("utf-8"))
+    count = _write_mods_block(manifest_path, proj)
     ok(f"已寫入 {len(pins)} 個釘選", f"Wrote {len(pins)} pin(s) to the manifest")
+    if count:
+        ok(f"[mods] 列出 {count} 個檔案", f"[mods] lists {count} file(s)")
     return 0
 
 
@@ -595,13 +708,23 @@ def cmd_restore(args: argparse.Namespace) -> int:
             ok(f"{pid} 已是 {sha[:7]}", f"{pid} already at {sha[:7]}")
             continue
         kind, owner, repo, _ref = parse_source(url)
-        # ``accept_capabilities`` matches this path's existing stance on
-        # ``trust_author``: a restore reinstalls what the project manifest
-        # already pinned, non-interactively, so it cannot stop at a prompt.
-        # The grant is still printed and still recorded in the lockfile.
+        # Something the lockfile does not have yet (phase 4C): the manifest
+        # came with the project, so what it installs is the project author's
+        # choice, not the user's. The install shows each plugin's source,
+        # trusted modules and capabilities and asks, in a terminal; without
+        # one only --yes installs it. Capabilities this machine granted
+        # before are reused by the install's own gate.
+        yes = bool(getattr(args, "yes", False))
+        if not yes and not _stdin_is_interactive():
+            err(f"{pid}：需要確認才能安裝（在終端機執行，或加 --yes）",
+                f"{pid}: installing it needs your confirmation -- run this in "
+                "a terminal, or pass --yes")
+            rc_all = 1
+            continue
         inst_args = argparse.Namespace(
-            force=True, no_confirm=True, trust_author=True,
-            accept_capabilities=True, pinned_sha=sha)
+            force=True, no_confirm=yes, trust_author=True,
+            accept_capabilities=yes, pinned_sha=sha,
+            consent_flag="--yes")
         # Trust _install_github's return code (spec ID11: install BY the pinned
         # sha). It never re-resolves the ref when pinned_sha is set, so success
         # (rc == 0) already means the installed plugin is at this exact sha.
@@ -614,6 +737,99 @@ def cmd_restore(args: argparse.Namespace) -> int:
         if rc != 0:
             rc_all = 1
     return rc_all
+
+
+def _print_mods_scan(scan: dict, state: dict) -> None:
+    from app.core.mods import SCAN_IS_A_HINT
+
+    for f in scan["files"]:
+        size = f"{f['size']} B"
+        lines = f", {f['lines']} lines" if "lines" in f else ""
+        print(f"  mods/{f['path']}  ({size}{lines})")
+        if not f.get("loads", True):
+            print("    never loaded (only .py files directly in mods/nodes/, "
+                  "not __init__.py, and mods/presets/*.json are read)")
+            continue
+        if f.get("role") != "node":
+            continue
+        finding = f.get("finding")
+        if finding:
+            warn(f"    掃描：{finding['message']}", f"    scan: {finding['message']}")
+        else:
+            print("    scan: no findings")
+        for need in f.get("needs") or ():
+            print(f"    uses: {need['summary']}")
+        if f.get("nodes"):
+            print("    nodes: " + ", ".join(f"project:{n}" for n in f["nodes"]))
+        if f.get("duplicates"):
+            warn("    另一個檔案也定義了同名節點，兩者都不載入",
+                 "    another file defines the same node name; neither loads")
+    for r in scan["refused"]:
+        err(f"  mods/{r['path']}：{r['reason']}", f"  mods/{r['path']}: {r['reason']}")
+    changed = state.get("changed") or {}
+    for kind in ("added", "changed", "removed"):
+        for rel in changed.get(kind) or ():
+            print(f"  {kind}: mods/{rel}")
+    print(f"  sha256: {scan['digest']}")
+    print(f"  trust: {state['state']}")
+    info(SCAN_IS_A_HINT, SCAN_IS_A_HINT)
+
+
+def cmd_mods(args: argparse.Namespace) -> int:
+    """Show the project's mods/ scan and hash; --trust records consent to
+    run exactly this tree; --write rewrites the manifest's [mods]."""
+    from app.core import mods
+
+    proj = Path(args.dir).expanduser().resolve()
+    manifest_path = proj / MANIFEST_FILENAME
+    if not manifest_path.exists():
+        err(f"找不到 manifest：{manifest_path}", f"Manifest not found: {manifest_path}")
+        return 1
+    section(f"專案 mods：{proj}", f"Project mods: {proj}")
+    tree = mods.walk_mods(proj)
+    if not tree.exists:
+        info("沒有 mods/ 資料夾", "No mods/ folder")
+    scan = mods.scan_mods(proj, tree)
+    state = mods.mods_trust_state(proj, tree)
+    _print_mods_scan(scan, state)
+    rc = 0
+    if args.trust:
+        if tree.refused:
+            err("mods/ 裡有永遠不會載入的項目，無法信任；先移除它們",
+                "mods/ holds entries that are never loaded; remove them first. "
+                "Nothing was trusted.")
+            return 1
+        if not tree.node_files:
+            info("mods/ 沒有 Python 檔，不需要信任", "No Python files in mods/; nothing to trust")
+        else:
+            if not args.yes:
+                if not _stdin_is_interactive():
+                    err("需要確認：在終端機執行，或加 --yes（等於同意執行這些程式碼）",
+                        "This needs your confirmation: run it in a terminal, or pass "
+                        "--yes (which is consent to run this code)")
+                    return 1
+                try:
+                    answer = input(f"  {t('信任並允許執行這些檔案？', 'Trust these files and let CodefyUI run them?')} "
+                                   "[y/N]: ").strip().lower()
+                except EOFError:
+                    answer = ""
+                if answer not in ("y", "yes"):
+                    warn("已取消，沒有信任任何檔案", "Cancelled; nothing was trusted")
+                    return 1
+            # The tree read again: consent is for what was on the screen.
+            again = mods.walk_mods(proj)
+            if mods.mods_digest(again) != scan["digest"]:
+                err("mods/ 在顯示之後變更了，沒有信任；請重新執行",
+                    "mods/ changed after it was shown; nothing was trusted. Run "
+                    "this again.")
+                return 1
+            mods.record_trust(proj, again, full=bool(args.full))
+            ok(f"已信任 mods/（sha256 {scan['digest'][:12]}…）",
+               f"Trusted mods/ (sha256 {scan['digest'][:12]}…)")
+    if args.write:
+        count = _write_mods_block(manifest_path, proj)
+        ok(f"已更新 [mods]（{count} 個檔案）", f"Updated [mods] ({count} file(s))")
+    return rc
 
 
 def _server_base() -> tuple[str, str]:
@@ -809,11 +1025,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_freeze = sub.add_parser("freeze", help="Write installed github plugin pins into the manifest")
     p_freeze.add_argument("dir", help="project directory")
+    p_freeze.add_argument("--used-only", action="store_true",
+                          help="pin only the plugins this project's graphs use")
     p_freeze.set_defaults(_func=cmd_freeze)
 
     p_restore = sub.add_parser("restore", help="Install the manifest's plugin pins by their exact SHA")
     p_restore.add_argument("dir", help="project directory")
+    p_restore.add_argument("--yes", action="store_true",
+                           help="install pins the lockfile does not have without "
+                                "asking, granting what they request")
     p_restore.set_defaults(_func=cmd_restore)
+
+    p_mods = sub.add_parser("mods", help="Show the scan and hash of the project's mods/, "
+                                         "and trust it")
+    p_mods.add_argument("dir", help="project directory")
+    p_mods.add_argument("--trust", action="store_true",
+                        help="record consent to run exactly these files (asks first)")
+    p_mods.add_argument("--yes", action="store_true",
+                        help="with --trust: do not ask. This is consent to run the code")
+    p_mods.add_argument("--full", action="store_true",
+                        help="with --trust: also run files the scan had findings for")
+    p_mods.add_argument("--write", action="store_true",
+                        help="rewrite the manifest's informational [mods] block")
+    p_mods.set_defaults(_func=cmd_mods)
 
     p_pub = sub.add_parser("publish", help="Publish a graph to the local server, recording git provenance")
     p_pub.add_argument("dir", help="project directory")

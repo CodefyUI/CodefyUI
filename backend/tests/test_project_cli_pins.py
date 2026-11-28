@@ -135,7 +135,7 @@ def test_restore_installs_pin_by_sha(tmp_path, monkeypatch):
         return 0
 
     monkeypatch.setattr(project, "_install_github", fake_install)
-    assert project.cmd_restore(argparse.Namespace(dir=str(proj))) == 0
+    assert project.cmd_restore(argparse.Namespace(dir=str(proj), yes=True)) == 0
     assert calls == [("o", "pack-a", "v1.2", "b" * 40, True)]
 
 
@@ -191,5 +191,34 @@ def test_restore_continues_batch_after_install_failure(tmp_path, monkeypatch):
         return 1 if repo == "pack-a" else 0
 
     monkeypatch.setattr(project, "_install_github", fake_install)
-    assert project.cmd_restore(argparse.Namespace(dir=str(proj))) == 1
+    assert project.cmd_restore(argparse.Namespace(dir=str(proj), yes=True)) == 1
     assert attempts == ["pack-a", "pack-b"]  # pack-b still ran after the fail
+
+
+def test_restore_asks_before_installing_what_the_lockfile_lacks(tmp_path, monkeypatch):
+    """Phase 4C: the manifest came with the project. A pin the lockfile
+    does not have is installed only after the install's own preview and
+    questions (in a terminal) or with --yes; without either, nothing is
+    installed."""
+    proj = _init(tmp_path)
+    (proj / "codefyui.project.toml").write_text(
+        '[project]\nname = "svc"\nformat_version = 1\n\n'
+        '[plugins]\npack-a = { url = "https://github.com/o/pack-a", '
+        'ref = "v1.2", sha = "' + "b" * 40 + '" }\n', encoding="utf-8")
+    monkeypatch.setattr(project, "load_lockfile", lambda: {"schema": 1, "plugins": {}})
+    calls = []
+
+    def fake_install(owner, repo, ref, args, lockfile):
+        calls.append((args.no_confirm, args.accept_capabilities))
+        # The preview names restore's own consent, not --trust-author.
+        assert args.consent_flag == "--yes"
+        return 0
+
+    monkeypatch.setattr(project, "_install_github", fake_install)
+    monkeypatch.setattr(project, "_stdin_is_interactive", lambda: False)
+    assert project.cmd_restore(argparse.Namespace(dir=str(proj))) == 1
+    assert calls == []
+    # In a terminal: the install asks (no_confirm and accept_capabilities off).
+    monkeypatch.setattr(project, "_stdin_is_interactive", lambda: True)
+    assert project.cmd_restore(argparse.Namespace(dir=str(proj))) == 0
+    assert calls == [(False, False)]

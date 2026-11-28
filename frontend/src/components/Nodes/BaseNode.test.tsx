@@ -1761,3 +1761,34 @@ describe('a Switch card', () => {
     expect(outputLabel().style.color).toBe(hexToRgb(getPortColor('ANY')));
   });
 });
+
+describe('BaseNode: a project node whose mods are not loaded (phase 4C)', () => {
+  afterEach(async () => {
+    const { useNodeDefStore } = await import('../../store/nodeDefStore');
+    const { useProjectStore } = await import('../../store/projectStore');
+    useNodeDefStore.setState({ definitions: [] });
+    useProjectStore.setState({ modsReviewOpen: false });
+  });
+
+  it('says NOT LOADED and opens the mods review; nothing for a registered one', async () => {
+    const { useNodeDefStore } = await import('../../store/nodeDefStore');
+    const { useProjectStore } = await import('../../store/projectStore');
+    useNodeDefStore.setState({ definitions: [makeDef({ node_name: 'Conv2d' })] });
+    const view = renderBody(baseData({
+      type: 'project:FocalLoss', definition: makeDef({ node_name: 'project:FocalLoss' }),
+    }));
+    const badge = screen.getByTestId('node-mods-not-loaded');
+    expect(badge.textContent).toBe('NOT LOADED');
+    expect(badge.getAttribute('title')).toBe(
+      'From this project’s mods, not loaded. Click to review mods/.');
+    fireEvent.click(badge);
+    expect(useProjectStore.getState().modsReviewOpen).toBe(true);
+    view.unmount();
+
+    act(() => useNodeDefStore.setState({ definitions: [makeDef({ node_name: 'project:FocalLoss' })] }));
+    renderBody(baseData({
+      type: 'project:FocalLoss', definition: makeDef({ node_name: 'project:FocalLoss' }),
+    }));
+    expect(screen.queryByTestId('node-mods-not-loaded')).toBeNull();
+  });
+});

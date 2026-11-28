@@ -57,8 +57,12 @@ export function NodeItem({ definition }: NodeItemProps) {
   // plugin's own name from then on.
   const pluginsById = usePluginStore(selectPluginsById);
   const pluginName = pluginNameOf(pluginsById, definition.provider);
+  // A project's mods node and a global custom node may share a NODE_NAME
+  // (`project:Focal` and `Focal`): the line says which one this is.
   const provenance =
-    pluginName === null ? null : t('palette.fromPlugin', { plugin: pluginName });
+    definition.provider === 'project' ? t('palette.fromProjectMods')
+      : definition.provider === 'custom' ? t('palette.fromCustom')
+        : pluginName === null ? null : t('palette.fromPlugin', { plugin: pluginName });
 
   const desc = tn(definition.node_name, 'description', definition.description);
 

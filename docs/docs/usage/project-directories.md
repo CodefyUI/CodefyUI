@@ -522,7 +522,11 @@ filtered by project.
 ### The project's `.env`
 
 A project this install created (the default project, **New project**, an
-import) and a project named with `--project` load their `.env` as before.
+import) and a project named with `--project` load their `.env` as before,
+except that no project's `.env` may set `PYTHON*`, `LD_*` or `DYLD_*`: they
+choose which code the server's child processes run, so they are skipped and
+named in the server log. If you need one, export it in your own shell before
+`cdui start`.
 For any other folder you open, and for a clone, the editor first lists the
 variable **names** (never the values) and asks. The answer is remembered for
 those exact contents in `<user data>/trust.json`; when the file changes, you
@@ -553,6 +557,121 @@ start (`CUDA_VISIBLE_DEVICES`, `HF_HOME` and the other `HF_*`,
 `TORCH_HOME`, `OMP_NUM_THREADS` and similar): after a switch the editor says
 which of these need a server restart to take effect.
 
+## Project mods {/* #project-mods */}
+
+A project can carry its own nodes in `mods/`, next to its graphs:
+
+```
+mods/
+  nodes/
+    focal_loss.py      # BaseNode subclasses, one or more per file
+    _helpers.py        # imported by the node files: from ._helpers import ...
+  presets/
+    strong_aug.json    # preset cards, like exported presets
+```
+
+A node in `mods/nodes/` is always named `project:<NODE_NAME>` in the palette
+and in saved graphs (`project:FocalLoss`). A bare name never means a project
+node: a project node called `Conv2d` is `project:Conv2d`, and a graph that
+says `Conv2d` still gets the built-in one. The palette says where each node
+comes from: this project's `mods/`, a custom node installed on this
+computer, or a plugin.
+
+### Trust {/* #project-mods-trust */}
+
+These files are Python. Trusting them runs them in this CodefyUI server with
+your permissions. The scan result is a hint, not a sandbox.
+
+Nothing in `mods/` runs until you agree. A project you open from a folder,
+or clone, asks first: the prompt lists every file with its size, line count,
+what the plugin gate's scan found, the node names it defines (read from the
+source, nothing is imported to list them), and, when the files changed
+since you last agreed, which ones. Your answer is remembered for exactly
+those bytes (every file and its executable bit) in `<user data>/trust.json`;
+any change asks again at the next load (Reload Nodes, a switch, a restart).
+
+- **Trust and load** runs the files. A file the scan had findings for is not
+  loaded unless you tick **Trust these files completely**.
+- **Not now** opens the project without its mods. You are not asked again
+  for the same files in this browser session; **Review mods/** in the project
+  menu, the banner on a graph and the **NOT LOADED** badge on a node open the
+  prompt again.
+- A graph that uses a project node that is not loaded still opens, and saving
+  it keeps those nodes exactly as they were (type, parameters, wires). Run,
+  validate and publish refuse it and say why.
+
+A project this install created (the default project, **New project**, an
+import) keeps a baseline: the git `HEAD` and the `mods/` files (none, at
+first) as they were when it was created and at every load since. While
+`HEAD` stays where the baseline saw it, your own edits load without asking.
+When `HEAD` moved and `mods/` changed with it (a pull, a merge, a checkout),
+it asks like any other project, including the first time mods arrive in a
+project that never had any. A project that is not a git repository is not
+asked about. One created before this version has no baseline yet, so mods it
+already holds ask once.
+
+When `mods/` changes on disk after it was loaded (a pull in Source Control
+or in a terminal), the editor says so: what runs is still the version loaded
+before, and **Reload and check** runs the check above. Nothing is reloaded
+on its own.
+
+Only the `.py` files directly in `mods/nodes/` (not `__init__.py`) and
+`mods/presets/*.json` are read. Every other file the prompt lists, such as
+`mods/__init__.py`, a `conftest.py` or a `.pth` file, is marked **not
+loaded** and listed after the ones that load. A finding is said in terms of
+the file: for example "Line 2 imports socket: needs network".
+
+Some things in `mods/` are never loaded, and when any is there, nothing in
+`mods/` loads and the prompt lists them: a symbolic link (or `mods` itself
+being one), anything that is not a regular file, compiled files (`.pyc`,
+`.so`, `.pyd` and the like), a `__pycache__` folder, and a folder under
+`nodes/` that is a package (has an `__init__.py`). Only the files directly
+in `mods/nodes/` are node files; each is read once, checked against what
+you agreed to, and run as it was read. Two files that define the same
+`NODE_NAME` both stay unloaded. A preset whose inner nodes did not load,
+or whose name a built-in preset already has, is skipped and listed.
+
+Switching to another project unloads its nodes and presets, but unloading
+is not isolation: code that ran may have left something behind. Once another
+project's mods have run in this server, the project chip says **restart
+recommended**; restart the server to remove them fully.
+
+A graph that uses `project:` nodes runs only on **This server**: a run sent
+to a worker, or to `any`, is refused before it starts, because the worker
+does not have this project's mods (nor your consent to run them).
+
+### On the command line {/* #project-mods-cli */}
+
+```bash
+cdui project mods .                 # the scan and the sha256, nothing runs
+cdui project mods . --trust         # the same, then asks
+cdui project mods . --trust --yes   # records it without asking (CI)
+cdui project mods . --write         # rewrite the manifest's [mods]
+```
+
+`--yes` is consent to run the code, the same as saying yes in the prompt.
+`--full` (with `--trust`) also runs the files the scan had findings for.
+`cdui project validate` loads a project's mods only when the trust record
+matches the files exactly, and otherwise says that graphs using `project:`
+nodes fail and why. Outside the server nothing is trusted on the owner's
+behalf.
+
+The manifest's `[mods]` block lists each file with its sha256 and the nodes
+or preset it defines, so a review sees which mod changed. It is written by
+`cdui project freeze` and `cdui project mods --write` (not by saving), edited
+in place so your comments stay, and `cdui project validate` warns when it
+does not match `mods/`. It is never used to decide trust: a repository cannot
+vouch for itself.
+
+`cdui project freeze --used-only` pins only the plugins the project's graphs
+use. A saved folder graph lists what it needs in `index.json`:
+`requires.plugins`, `requires.mods` (its `project:` nodes) and
+`requires.custom` (custom nodes installed on the author's computer).
+
+`cdui project restore` installs a pin the lockfile does not have only after
+showing its source, the modules it asks to import and the capabilities it
+requests, and asking; in a script, pass `--yes`.
+
 ## Migrating an existing flat graphs dir
 
 If you followed the older ["version control your graphs"](./version-control-graphs.md)
@@ -570,7 +689,8 @@ Every `*.json` is copied into `graphs/` and split into the logic/layout pair.
 - One project is open at a time per server; switch with the project chip (see above).
 - `DB_PATH`, custom nodes and [exported presets](/advanced/presets#creating-your-own)
   stay install-global; [plugins](/advanced/plugins) are the portable mechanism
-  (pinned by SHA in the manifest).
+  (pinned by SHA in the manifest), and a project's own nodes go in
+  [`mods/`](#project-mods).
 - `assets/data/` is where a relative `Dataset` or `FileReader` path resolves.
   `CSVReader`, `DocumentLoader` and `TextCorpusDataset` resolve a typed
   relative path against the project root instead, so write

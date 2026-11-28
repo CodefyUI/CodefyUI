@@ -1802,22 +1802,34 @@ def index_requires_safe(files: dict[str, bytes]) -> dict | None:
 
 def derive_requires(logic: dict, previous: dict | None,
                     provider_of=_registry_provider) -> dict:
-    """The index's ``requires``: which plugin and custom ("mods") node types
-    the graph uses, with no versions or hashes (pinning is the manifest's).
+    """The index's ``requires``: which node types the graph needs beyond the
+    built-ins, with no versions or hashes (pinning is the manifest's).
 
-    A type this machine does not know keeps the entry the previous save
-    recorded: a missing plugin must not erase the requirement for it.
+    * ``plugins.<id>.nodes`` -- a plugin's types;
+    * ``mods.nodes`` -- this project's own ``project:<NODE_NAME>`` types
+      (phase 4C), known by their name whether or not the mods are loaded;
+    * ``custom.nodes`` -- custom nodes installed on this computer.
+
+    Before 4C ``mods`` listed custom nodes; an index written then is still
+    read (its non-``project:`` entries count as custom). A type this machine
+    does not know keeps the entry the previous save recorded: a missing
+    plugin must not erase the requirement for it.
     """
     previous = previous if isinstance(previous, dict) else {}
     old_owner: dict[str, tuple[str, str | None]] = {}
     for plugin_id, entry in (previous.get("plugins") or {}).items():
         for t in (entry or {}).get("nodes") or ():
             old_owner[t] = ("plugin", plugin_id)
+    for t in (previous.get("custom") or {}).get("nodes") or ():
+        old_owner[t] = ("custom", None)
     for t in (previous.get("mods") or {}).get("nodes") or ():
-        old_owner[t] = ("mods", None)
+        old_owner[t] = ("mods" if str(t).startswith("project:") else "custom", None)
     plugins: dict[str, set[str]] = {}
-    mods: set[str] = set()
+    found: dict[str, set[str]] = {"mods": set(), "custom": set()}
     for node_type in _node_types(logic):
+        if node_type.startswith("project:"):
+            found["mods"].add(node_type)
+            continue
         provider = provider_of(node_type)
         if provider is None:
             owner = old_owner.get(node_type)
@@ -1827,17 +1839,18 @@ def derive_requires(logic: dict, previous: dict | None,
         elif provider.startswith("plugin:"):
             kind, plugin_id = "plugin", provider.split(":", 1)[1]
         elif provider == "custom":
-            kind, plugin_id = "mods", None
+            kind, plugin_id = "custom", None
         else:
             continue
         if kind == "plugin":
             plugins.setdefault(plugin_id, set()).add(node_type)
         else:
-            mods.add(node_type)
+            found[kind].add(node_type)
     out: dict = {"codefyui": REQUIRES_CODEFYUI}
     if plugins:
         out["plugins"] = {pid: {"nodes": sorted(types)}
                           for pid, types in sorted(plugins.items())}
-    if mods:
-        out["mods"] = {"nodes": sorted(mods)}
+    for kind in ("mods", "custom"):
+        if found[kind]:
+            out[kind] = {"nodes": sorted(found[kind])}
     return out

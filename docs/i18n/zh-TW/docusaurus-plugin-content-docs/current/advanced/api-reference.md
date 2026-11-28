@@ -189,11 +189,13 @@ run 會記錄兩項送出時的資訊；自 #344 起，另外記錄兩項實際�
 
 | Endpoint | Method | Auth | 說明 |
 |----------|--------|------|------|
-| `/api/projects` | GET | open | `{current, project_id, projects_root, recent[{path, name, last_opened, missing}], env, startup, flat_graphs, browse_allowed}`。平面模式下 `project_id` 為 `flat`。 |
+| `/api/projects` | GET | open | `{current, project_id, projects_root, recent[{path, name, last_opened, missing}], env, mods, startup, flat_graphs, browse_allowed}`。平面模式下 `project_id` 為 `flat`。`mods` 為 `{state（none、blocked、trusted、untrusted、changed）, loaded, nodes, presets, skipped, restart_recommended, needs_consent, digest?, disk_changed}`（`disk_changed`：磁碟上的 `mods/` 與上次載入檢查的那一份不同）；切換專案的回應也帶著它。 |
 | `/api/projects/open` | POST | token | `{path}`：開啟該專案資料夾。已經開著時回 `unchanged: true`。 |
 | `/api/projects/create` | POST | token | `{name, parent?}`：在 `<parent 或專案根目錄>/<name>` 建立專案、`git init` 並開啟。`name` 只能是 `[A-Za-z0-9._-]`、不以點開頭、不是 Windows 保留名（否則 400 `invalid_name`）；目標資料夾非空時回 409 `exists`。 |
 | `/api/projects/clone` | POST | token | `{url, parent?}`：把 https repository clone 到 `<parent 或專案根目錄>/<repo 名稱>`（資料夾已存在時 409 `exists`），不取 submodule、不下載 git-lfs 檔案（`uses_lfs` 會標出），時間與大小上限比照外掛安裝，然後開啟。沒有 `codefyui.project.toml` 時會刪掉這次 clone 的資料夾（400 `not_a_project`）。它的 `.env` 要等你同意才載入。 |
 | `/api/projects/trust` | POST | token | `{sha256}`：載入目前專案的 `.env`（sha256 即 `env.sha256` 顯示的值）；檔案已經改過時回 409 `env_changed`。 |
+| `/api/projects/mods` | GET | open | 目前專案的 `mods/`，內容即信任提示列出的，不匯入任何東西：`{digest, files[{path, size, role, sha256, loads, reason?, lines?, finding?{line, kind, module?, capability?, construct?, message}, needs?, nodes?, duplicates?}], refused[{path, reason}], duplicates, notice, trust{state, digest, changed}}`，加上 `mods` 狀態。見[專案 mods](/usage/project-directories#project-mods)。 |
+| `/api/projects/trust-mods` | POST | token | `{sha256, full?}`：信任並載入顯示過 `digest` 的那份 `mods/`（`full` 也執行掃描有發現的檔案）。之後有變更時回 409 `mods_changed`；含有永遠不載入的項目時回 409 `mods_blocked`。 |
 | `/api/projects/import` | GET | open | 匯入平面模式的圖會複製什麼：`{source, graphs[{name, file, size}], graphs_bytes, assets[{path, kind, size, files, is_dir}], assets_bytes}`。 |
 | `/api/projects/import` | POST | token | `{name}`（新專案）或 `{path}`（既有專案），以及 `include_assets`（預設 `true`）：複製平面模式的圖與它們用到的檔案，然後開啟專案。不搬移任何東西；專案原本就有的保留（`skipped`、`kept`）。 |
 | `/api/projects/recent` | DELETE | token | `{path}`：從最近清單移除，不動資料夾。 |

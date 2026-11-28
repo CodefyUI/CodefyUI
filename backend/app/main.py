@@ -373,6 +373,16 @@ async def _lifespan_body(app: FastAPI):
     ):
         preset_count += preset_registry.discover(plugin_dir / "presets", registry)
     logger.info("Discovered %d presets", preset_count)
+
+    # The project's own mods/ (phase 4C): only when trusted; the gate is in
+    # core/mods.py and is the one every reload and switch goes through.
+    from .core import mods as project_mods
+
+    project_mods.set_server_process()
+    mods_status = project_mods.load_project_mods(settings.PROJECT_DIR)
+    if settings.PROJECT_DIR is not None and mods_status["state"] != "none":
+        logger.info("Project mods: %s, %d node(s) loaded", mods_status["state"],
+                    len(mods_status["nodes"]))
     for name in sorted(preset_registry.presets.keys()):
         logger.debug("  * %s", name)
 

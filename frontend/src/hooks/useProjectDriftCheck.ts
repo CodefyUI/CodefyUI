@@ -36,7 +36,13 @@ export async function checkProjectDrift(now: number = Date.now()): Promise<void>
     return; // unreachable: the connection banner says so, not this one
   }
   const loaded = useProjectStore.getState();
-  if (!loaded.stale && project !== loaded.projectDir) loaded.markStale();
+  if (!loaded.stale && project !== loaded.projectDir) {
+    loaded.markStale();
+  } else if (project !== null) {
+    // The same project: its mods/ may have changed meanwhile (a pull in a
+    // terminal). The overview says so; nothing is reloaded (phase 4C).
+    await loaded.loadOverview();
+  }
 }
 
 export function useProjectDriftCheck(): void {

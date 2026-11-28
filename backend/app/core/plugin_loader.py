@@ -33,6 +33,11 @@ from platformdirs import user_data_dir
 
 LOCKFILE_SCHEMA = 1
 MANIFEST_FILENAME = "cdui.plugin.toml"
+
+#: Ids no plugin may take because something other than a plugin owns the
+#: ``<id>:`` prefix: ``project:`` names a project's own mods (phase 4C).
+#: The manifest check refuses them; discovery skips them if one is installed.
+RESERVED_PREFIX_IDS = frozenset({"project"})
 NAMESPACE_PACKAGE = "cdui_plugins"
 
 # Bumped on every full re-discovery (plugin/node reload, enable/disable). The
@@ -322,7 +327,7 @@ def install_plugin_finder(
 
     found: list[PluginNamespace] = []
     for plugin_id, entry in lockfile.get("plugins", {}).items():
-        if not is_enabled(entry):
+        if not is_enabled(entry) or plugin_id in RESERVED_PREFIX_IDS:
             continue
         plugin_dir = _resolve_plugin_dir(plugin_id, entry, builtin_root, user_root)
         if not (plugin_dir / MANIFEST_FILENAME).exists():
@@ -413,6 +418,8 @@ def iter_plugin_dirs(
     """
     out: list[tuple[str, Path]] = []
     for plugin_id, entry in lockfile.get("plugins", {}).items():
+        if plugin_id in RESERVED_PREFIX_IDS:
+            continue  # project: names a project's mods, never a pack
         if not include_disabled and not is_enabled(entry):
             continue
         plugin_dir = _resolve_plugin_dir(plugin_id, entry, builtin_root, user_root)
@@ -462,6 +469,13 @@ def rediscover_all(
         preset_count += preset_registry.discover(user_presets_dir, registry)
     for _plugin_id, plugin_dir in iter_plugin_dirs(builtin_root, user_root, lockfile):
         preset_count += preset_registry.discover(plugin_dir / "presets", registry)
+
+    # The open project's mods, through the same trust gate as startup and
+    # a switch: a changed hash is not loaded and asks again.
+    from . import mods
+    from ..config import settings as _settings
+
+    mods.load_project_mods(_settings.PROJECT_DIR)
 
     global _reload_generation
     _reload_generation += 1

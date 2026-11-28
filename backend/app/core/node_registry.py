@@ -216,7 +216,11 @@ class NodeRegistry:
         if name in self._nodes:
             return self._nodes[name]
         if ":" not in name:
-            matches = [k for k in self._nodes if k.endswith(f":{name}")]
+            # Never a project node (phase 4C): ``project:X`` is only ever
+            # reached by its full name, so a graph that says ``X`` keeps
+            # meaning the built-in, plugin or custom node it always meant.
+            matches = [k for k in self._nodes
+                       if k.endswith(f":{name}") and not k.startswith("project:")]
             if len(matches) == 1:
                 return self._nodes[matches[0]]
             if len(matches) > 1:
@@ -306,6 +310,16 @@ class NodeRegistry:
         self._nodes.clear()
         self.generation += 1
 
+    def unregister_prefix(self, prefix: str) -> int:
+        """Drop every entry whose key starts with *prefix* (a project's
+        ``project:`` nodes on a switch). Returns how many went."""
+        gone = [k for k in self._nodes if k.startswith(prefix)]
+        for key in gone:
+            del self._nodes[key]
+        if gone:
+            self.generation += 1
+        return len(gone)
+
 
 registry = NodeRegistry()
 
@@ -329,6 +343,8 @@ def provider_for(qualified_name: str, cls: type[BaseNode]) -> str:
     has to say the same thing about the same pack.
     """
     mod = cls.__module__ or ""
+    if mod.startswith("codefyui_project_"):
+        return "project"
     if mod.startswith("app.nodes"):
         return "builtin"
     if mod.startswith("app.custom_nodes"):

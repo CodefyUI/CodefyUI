@@ -149,6 +149,10 @@ class PresetRegistry:
     def clear(self) -> None:
         self._presets.clear()
 
+    def remove(self, name: str) -> None:
+        """Forget the preset *name* (a project's, on a switch)."""
+        self._presets.pop(name, None)
+
     def _load_and_resolve(self, raw: dict[str, Any], node_registry: NodeRegistry) -> PresetDefinition:
         nodes = [InternalNodeSchema(**n) for n in raw["nodes"]]
         edges = [InternalEdgeSchema(**e) for e in raw["edges"]]

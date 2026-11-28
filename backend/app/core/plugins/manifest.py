@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from app.core.plugin_loader import MANIFEST_FILENAME
+from app.core.plugin_loader import MANIFEST_FILENAME, RESERVED_PREFIX_IDS
 from app.core.security_tiers import (
     CAPABILITIES,
     normalize_capabilities,
@@ -108,6 +108,11 @@ def validate_manifest(m: dict[str, Any]) -> None:
         raise ManifestError(
             f"Invalid plugin id: {plugin_id!r}. "
             "Must match ^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
+        )
+    if plugin_id in RESERVED_PREFIX_IDS:
+        raise ManifestError(
+            f"Invalid plugin id: {plugin_id!r} is reserved: project:<NODE_NAME> "
+            "is how a project's own mods/ nodes are named."
         )
     _validate_security_table(m.get("security"))
 

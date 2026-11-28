@@ -108,6 +108,7 @@ def _opened(result_project: Path | None, *, extra: dict[str, Any] | None = None
         # Variables some libraries read only at import or start-up: changing
         # them at run time has no effect until the server restarts.
         "env_restart_recommended": env["restart_recommended"],
+        "mods": _mods_view(result_project),
     }
     if extra:
         answer.update(extra)
@@ -153,6 +154,7 @@ async def list_projects(request: Request) -> dict[str, Any]:
         "projects_root": str(Path(settings.PROJECTS_ROOT).expanduser()),
         "recent": recent,
         "env": _env_view(),
+        "mods": _mods_view(current),
         "startup": None if decision is None else {
             "reason": decision.reason,
             "created": decision.created,
@@ -228,10 +230,12 @@ def _new_project_target(name: str, parent_raw: str | None) -> Path:
 
 
 def _make_project(target: Path, name: str) -> bool:
-    """Scaffold, mark owned (this install made it), git init and commit."""
+    """Scaffold, git init and commit, then mark owned (this install made
+    it): after the commit, so the mods baseline records that HEAD."""
     scaffold_project(target, name)
+    git_ready = init_new_project_repo(target)
     projects.mark_owned(target)
-    return init_new_project_repo(target)
+    return git_ready
 
 
 @router.post("/create")
@@ -378,6 +382,69 @@ async def trust_project_env(body: TrustRequest) -> dict[str, Any]:
                      ".env changed since it was shown; review it again")
     projects.trust_env(project, digest)
     projects.load_project_env(project)
+    return _opened(project)
+
+
+# ── Project mods (phase 4C) ───────────────────────────────────────────────
+
+def _mods_view(project: Path | None) -> dict[str, Any]:
+    """The open project's mods: the trust state and whether they are
+    loaded. The full scan is ``GET /api/projects/mods``."""
+    from ..core import mods
+
+    if project is None:
+        return {"state": "none", "loaded": False, "needs_consent": False}
+    status = mods.current_status(project)
+    status["needs_consent"] = status["state"] in ("untrusted", "changed")
+    if status["needs_consent"]:
+        # What a "not now" is remembered against: the same tree is not
+        # asked about again this session, a changed one is.
+        status["digest"] = mods.mods_digest(mods.walk_mods(project))
+    return status
+
+
+@router.get("/mods")
+async def read_project_mods() -> dict[str, Any]:
+    """What the trust prompt lists: every file under ``mods/``, each node
+    file's scan (gate verdict, capabilities, node names), refused entries,
+    the digest, and the trust state. Nothing is imported to answer."""
+    from ..core import mods
+
+    project = settings.PROJECT_DIR
+    if project is None:
+        raise _error(400, "no_project", "no project is open")
+    tree = mods.walk_mods(project)
+    answer = mods.scan_mods(project, tree)
+    answer.update(_mods_view(project))
+    answer["trust"] = mods.mods_trust_state(project, tree)
+    return answer
+
+
+class TrustModsRequest(BaseModel):
+    #: The digest of the tree the user was shown (``GET /mods`` ``digest``).
+    sha256: str
+    #: Also run the files the scan had findings for ("trust these files
+    #: completely"). Without it those files are not loaded.
+    full: bool = False
+
+
+@router.post("/trust-mods")
+async def trust_project_mods(body: TrustModsRequest) -> dict[str, Any]:
+    from ..core import mods
+
+    project = settings.PROJECT_DIR
+    if project is None:
+        raise _error(400, "no_project", "no project is open")
+    tree = mods.walk_mods(project)
+    if tree.refused:
+        raise _error(409, "mods_blocked", "mods/ holds entries that are never loaded; "
+                     "see GET /api/projects/mods", details=[
+                         {"path": p, "reason": r} for p, r in tree.refused])
+    if mods.mods_digest(tree) != body.sha256:
+        raise _error(409, "mods_changed",
+                     "mods/ changed since it was shown; review it again")
+    mods.record_trust(project, tree, full=body.full)
+    mods.reload_project_mods(project)
     return _opened(project)
 
 

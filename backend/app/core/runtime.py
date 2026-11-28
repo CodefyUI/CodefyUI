@@ -142,7 +142,7 @@ def _pack_of(node_type: str) -> str | None:
     the canvas saves plugin types qualified.
     """
     pack, sep, name = node_type.partition(":")
-    if sep and name and PLUGIN_ID_RE.fullmatch(pack):
+    if sep and name and PLUGIN_ID_RE.fullmatch(pack) and pack != "project":
         return pack
     return None
 
@@ -166,6 +166,11 @@ def _unknown_type(
     the lockfile's ``plugins`` table, files or not.
     """
     line = f"Unknown node type: {node_type}"
+    from .mods import unloaded_reason
+
+    why = unloaded_reason(node_type)
+    if why:
+        return f"{line} -- {why}"
     pack = _pack_of(node_type)
     if pack is None:
         return line

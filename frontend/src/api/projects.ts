@@ -47,12 +47,76 @@ export interface ProjectEnv {
   needs_consent: boolean;
 }
 
+/** What happened to the open project's `mods/` (phase 4C). */
+export interface ModsStatus {
+  /** none: no Python under mods/; blocked: something there is never loaded. */
+  state: 'none' | 'blocked' | 'trusted' | 'untrusted' | 'changed';
+  loaded: boolean;
+  /** The `project:<NODE_NAME>` types that are registered. */
+  nodes?: string[];
+  presets?: string[];
+  skipped?: { path: string; reason: string }[];
+  /** Another project's mods ran in this server: unloading is not isolation. */
+  restart_recommended?: boolean;
+  needs_consent: boolean;
+  /** With needs_consent: the tree's digest, what "not now" is kept against. */
+  digest?: string | null;
+  /**
+   * mods/ on disk differs from the tree the last load looked at (a pull
+   * since). What runs is still what was loaded; the next load checks it.
+   */
+  disk_changed?: boolean;
+}
+
+/** What the scan found in a node file, in mods' terms (never the plugin gate's text). */
+export interface ModsFinding {
+  line: number | null;
+  kind: 'import' | 'blocked_import' | 'refused' | 'syntax' | 'unreadable';
+  module?: string;
+  capability?: string;
+  construct?: string | null;
+  /** The English sentence the CLI prints. */
+  message: string;
+}
+
+/** One file under `mods/`, as the trust prompt lists it. */
+export interface ModsFile {
+  path: string;
+  size: number;
+  role: 'node' | 'preset' | 'other';
+  sha256: string;
+  lines?: number;
+  /** False for a file CodefyUI never reads (not a node file, not a preset). */
+  loads?: boolean;
+  reason?: string;
+  finding?: ModsFinding | null;
+  needs?: { capability: string; summary: string }[];
+  nodes?: string[];
+  duplicates?: string[];
+}
+
+/** `GET /api/projects/mods`: the scan, never an import. */
+export interface ModsScan extends ModsStatus {
+  digest: string | null;
+  files: ModsFile[];
+  refused: { path: string; reason: string }[];
+  duplicates: Record<string, string[]>;
+  notice: string;
+  trust: {
+    state: ModsStatus['state'];
+    digest: string | null;
+    changed: { added: string[]; removed: string[]; changed: string[] } | null;
+  };
+}
+
 export interface ProjectsOverview {
   current: ProjectRef | null;
   project_id: string;
   projects_root: string;
   recent: RecentProject[];
   env: ProjectEnv;
+  /** Absent from a server older than phase 4C. */
+  mods?: ModsStatus;
   startup: { reason: string; created: boolean; warnings: string[] } | null;
   /** Graphs in the pre-project folder, offered for import in flat mode. */
   flat_graphs: number;
@@ -63,6 +127,7 @@ export interface SwitchResult {
   project: ProjectRef | null;
   project_id: string;
   env: ProjectEnv;
+  mods?: ModsStatus;
   env_restart_recommended: string[];
   unchanged?: boolean;
   created?: string | null;
@@ -158,6 +223,19 @@ export function cloneProject(url: string, parent?: string): Promise<SwitchResult
 
 export function trustProjectEnv(sha256: string): Promise<SwitchResult> {
   return post('/trust', { sha256 });
+}
+
+export function getProjectMods(): Promise<ModsScan> {
+  return apiFetch(`${BASE}/mods`).then((res) => answer<ModsScan>(res));
+}
+
+/**
+ * Trust the `mods/` tree whose digest the user was shown. A tree that
+ * changed since is refused (409 `mods_changed`). *full* also runs the files
+ * the scan had findings for.
+ */
+export function trustProjectMods(sha256: string, full: boolean): Promise<SwitchResult> {
+  return post('/trust-mods', { sha256, full });
 }
 
 export function removeRecentProject(path: string): Promise<{ removed: string }> {

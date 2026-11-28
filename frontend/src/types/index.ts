@@ -150,7 +150,7 @@ export interface NodeDefinition {
    * Optional: a server built before the Plugin Center sends no such key, and
    * the caller then knows only that the node exists.
    */
-  provider?: 'builtin' | 'custom' | `plugin:${string}`;
+  provider?: 'builtin' | 'custom' | 'project' | `plugin:${string}`;
 }
 
 export interface PresetDefinition {
