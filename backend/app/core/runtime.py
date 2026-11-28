@@ -142,7 +142,7 @@ def _pack_of(node_type: str) -> str | None:
     the canvas saves plugin types qualified.
     """
     pack, sep, name = node_type.partition(":")
-    if sep and name and PLUGIN_ID_RE.fullmatch(pack):
+    if sep and name and PLUGIN_ID_RE.fullmatch(pack) and pack != "project":
         return pack
     return None
 

@@ -51,7 +51,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import _user_data_root, settings
-from . import projects
+from . import mods, projects
 from .fs_paths import canonical_path, is_within, same_dir
 from .project import PROJECT_MANIFEST
 
@@ -349,12 +349,16 @@ async def switch_project(state: Any, target: Path | None) -> SwitchResult:
             try:
                 env = projects.activate(target)
                 await _clear_stores(state)
+                # Unload the old project's mods, load the new one's only if
+                # trusted (the same gate as startup and Reload Nodes).
+                mods.load_project_mods(target)
                 if target is not None:
                     projects.record_opened(target)
             except BaseException:
                 logger.exception("switching to %s failed; reopening %s",
                                  target, previous or "flat mode")
                 projects.activate(previous)
+                mods.load_project_mods(previous)
                 raise
         finally:
             if service is not None:

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 import logging
 import os
 import stat
@@ -373,3 +374,222 @@ def mods_trust_state(project: Path, tree: ModsTree | None = None) -> dict[str, A
         "changed": sorted(r for r in set(now) & set(old) if now[r] != old[r]),
     }
     return {**answer, "state": "changed"}
+
+
+# ── Loading (only after trust) ────────────────────────────────────────────
+
+import importlib.abc  # noqa: E402
+import importlib.machinery  # noqa: E402
+import sys  # noqa: E402
+import threading  # noqa: E402
+import types  # noqa: E402
+
+_lock = threading.RLock()
+
+
+@dataclass
+class LoadedMods:
+    project: str | None = None
+    package: str | None = None
+    finder: Any = None
+    nodes: list[str] = field(default_factory=list)
+    presets: list[str] = field(default_factory=list)
+    skipped: list[dict[str, str]] = field(default_factory=list)
+    state: str = "none"
+
+
+_loaded = LoadedMods()
+#: Set once this process has executed any project's mods: unloading is not
+#: isolation, so a later switch recommends a restart.
+_ever_loaded = False
+
+
+def package_name(project: Path) -> str:
+    from . import projects
+
+    return f"codefyui_project_{projects.project_id(project)}"
+
+
+class _ModsFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    """Serves ``<package>.<stem>`` for the trusted top-level node files and
+    nothing else: the bytes are read once (no link followed), checked
+    against the hash the user agreed to, compiled and executed. No path
+    finder and no bytecode is ever involved, so a ``.pyc`` in the project
+    cannot be what runs."""
+
+    def __init__(self, package: str, root: Path, allowed: dict[str, str]) -> None:
+        self.package = package
+        self.root = root          # mods/nodes
+        self.allowed = allowed    # stem -> sha256
+
+    def find_spec(self, fullname, path=None, target=None):  # noqa: D401
+        if not fullname.startswith(self.package + "."):
+            return None
+        stem = fullname[len(self.package) + 1:]
+        if "." in stem or stem not in self.allowed:
+            return None
+        return importlib.machinery.ModuleSpec(
+            fullname, self, origin=str(self.root / f"{stem}.py"))
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        stem = module.__name__[len(self.package) + 1:]
+        path = self.root / f"{stem}.py"
+        data = _read_no_follow(path)
+        if hashlib.sha256(data).hexdigest() != self.allowed[stem]:
+            raise ImportError(f"mods/nodes/{stem}.py changed after it was trusted; "
+                              "it was not loaded")
+        module.__file__ = str(path)
+        module.__package__ = self.package
+        code = compile(data, str(path), "exec", dont_inherit=True)
+        exec(code, module.__dict__)  # noqa: S102 -- trusted by the user, see module docstring
+
+
+def _purge(package: str | None) -> None:
+    if not package:
+        return
+    for name in [n for n in sys.modules if n == package or n.startswith(package + ".")]:
+        del sys.modules[name]
+
+
+def unload_project_mods() -> None:
+    """Unregister the open project's mods: registry entries, presets, its
+    modules and its finder. Not isolation: code that ran may have left
+    effects that only a restart removes."""
+    from .node_registry import registry
+    from .preset_registry import preset_registry
+
+    global _loaded
+    with _lock:
+        registry.unregister_prefix(f"{PROJECT_PREFIX}:")
+        for name in _loaded.presets:
+            preset_registry.remove(name)
+        if _loaded.finder is not None and _loaded.finder in sys.meta_path:
+            sys.meta_path.remove(_loaded.finder)
+        _purge(_loaded.package)
+        _loaded = LoadedMods()
+
+
+def _load(project: Path, tree: ModsTree, entry_files: dict[str, str], full: bool) -> None:
+    from .node_base import BaseNode
+    from .node_registry import registry
+    from .preset_registry import preset_registry
+
+    global _ever_loaded
+    package = package_name(project)
+    scan = scan_mods(project, tree)
+    by_path = {f["path"]: f for f in scan["files"]}
+    loaded = LoadedMods(project=str(project), package=package, state="trusted")
+    allowed: dict[str, str] = {}
+    for rel in tree.node_files:
+        info = by_path.get(rel, {})
+        stem = rel.split("/", 1)[1][:-3]
+        if not stem.isidentifier():
+            loaded.skipped.append({"path": rel, "reason": "the file name is not a Python identifier"})
+            continue
+        if info.get("duplicates"):
+            loaded.skipped.append({"path": rel, "reason": "defines a node name another file "
+                                   "also defines: " + ", ".join(info["duplicates"])})
+            continue
+        if info.get("finding") and not full:
+            loaded.skipped.append({"path": rel, "reason": "the scan had a finding; trust "
+                                   "these files completely to load it"})
+            continue
+        if entry_files.get(rel) != tree.files[rel].sha256:
+            loaded.skipped.append({"path": rel, "reason": "not the file that was trusted"})
+            continue
+        allowed[stem] = tree.files[rel].sha256
+    pkg = types.ModuleType(package)
+    pkg.__path__ = []  # nothing on disk: only the finder below serves it
+    pkg.__package__ = package
+    sys.modules[package] = pkg
+    finder = _ModsFinder(package, tree.root / NODES_DIR, allowed)
+    sys.meta_path.insert(0, finder)
+    loaded.finder = finder
+    for stem in sorted(allowed):
+        name = f"{package}.{stem}"
+        try:
+            module = sys.modules.get(name) or importlib.import_module(name)
+        except Exception as exc:  # noqa: BLE001 -- one bad mod must not stop the rest
+            loaded.skipped.append({"path": f"nodes/{stem}.py", "reason": f"failed to load: {exc}"})
+            logger.warning("project mod %s failed to load: %s", stem, exc)
+            continue
+        _ever_loaded = True
+        for obj in vars(module).values():
+            if isinstance(obj, type) and obj is not BaseNode and getattr(obj, "__module__", "") == name:
+                try:
+                    is_node = issubclass(obj, BaseNode)
+                except TypeError:
+                    continue
+                if is_node and getattr(obj, "NODE_NAME", None):
+                    loaded.nodes.append(registry.register(obj, plugin_id=PROJECT_PREFIX))
+    # Presets after nodes: one whose internal nodes did not load is skipped.
+    for rel in sorted(r for r, f in tree.files.items() if f.role == "preset"):
+        try:
+            raw = json.loads(_read_no_follow(tree.root / rel).decode("utf-8"))
+            # Parsed and resolved, not registered yet: a name already taken
+            # (a built-in's) must not be replaced.
+            preset = preset_registry._load_and_resolve(raw, registry)
+        except Exception as exc:  # noqa: BLE001 -- e.g. it uses a node that did not load
+            loaded.skipped.append({"path": rel, "reason": f"not loaded: {exc}"})
+            continue
+        if preset_registry.get(preset.preset_name) is not None:
+            loaded.skipped.append({"path": rel, "reason": f"a preset named "
+                                   f"{preset.preset_name!r} already exists"})
+            continue
+        preset_registry.add(preset)
+        loaded.presets.append(preset.preset_name)
+    global _loaded
+    _loaded = loaded
+
+
+def load_project_mods(project: Path | None, *, cli: bool = False) -> dict[str, Any]:
+    """Load *project*'s mods if, and only if, the user trusted exactly this
+    tree (or it is an owned project whose HEAD has not moved). *cli*: the
+    command line loads only on a matching trust record. Returns the status."""
+    with _lock:
+        unload_project_mods()
+        if project is None:
+            return current_status(None)
+        tree = walk_mods(project)
+        state = mods_trust_state(project, tree)
+        status = state["state"]
+        if status == "none" and tree.files:
+            # Presets alone: data, loaded without a prompt.
+            _load(project, tree, {}, full=False)
+            _loaded.state = "none"
+        elif status == "trusted":
+            entry = _entry(project)
+            if entry.get("owned") is True and not cli:
+                # The owner's own files: record what was loaded so a later
+                # moved HEAD is compared with this tree.
+                record_trust(project, tree, full=True)
+                entry = _entry(project)
+            if cli and entry.get("mods_sha256") != state["digest"]:
+                _loaded.project, _loaded.state = str(project), "untrusted"
+            else:
+                _load(project, tree, entry.get("mods_files") or {},
+                      full=bool(entry.get("mods_full")))
+        else:
+            _loaded.project, _loaded.state = str(project), status
+        return current_status(project)
+
+
+def reload_project_mods(project: Path | None) -> dict[str, Any]:
+    return load_project_mods(project)
+
+
+def current_status(project: Path | None) -> dict[str, Any]:
+    """``{state, loaded, nodes, presets, skipped, restart_recommended}``
+    for *project* as this process last loaded it."""
+    mine = project is not None and _loaded.project == str(project)
+    return {
+        "state": _loaded.state if mine else "none",
+        "loaded": bool(mine and (_loaded.nodes or _loaded.presets)),
+        "nodes": list(_loaded.nodes) if mine else [],
+        "presets": list(_loaded.presets) if mine else [],
+        "skipped": list(_loaded.skipped) if mine else [],
+        "restart_recommended": _ever_loaded,
+    }
