@@ -111,6 +111,27 @@ def test_explicit_project_loads_its_env_without_the_blocklist(isolated):
     assert projects.load_registry()["current"] == str(proj.resolve())
 
 
+def test_explicit_project_never_sets_python_or_loader_variables(isolated, caplog):
+    """Phase 4C: even the project named with --project cannot set PYTHON*,
+    LD_* or DYLD_* -- they choose which code child processes run. Listed as
+    blocked, logged by name (never value), everything else still loaded."""
+    proj = _project(isolated / "explicit", env=(
+        "P4_SECRET=1\nPYTHONPATH=/evil\npythonstartup=/x\nLD_PRELOAD=/evil.so\n"
+        "DYLD_INSERT_LIBRARIES=/evil.dylib\nCODEFYUI_X=2\n"))
+    for name in ("P4_SECRET", "PYTHONPATH", "pythonstartup", "LD_PRELOAD",
+                 "DYLD_INSERT_LIBRARIES", "CODEFYUI_X"):
+        os.environ.pop(name, None)
+    settings.PROJECT_DIR = proj.resolve()
+    with caplog.at_level("WARNING"):
+        projects.resolve_startup_project()
+    assert os.environ["P4_SECRET"] == "1" and os.environ["CODEFYUI_X"] == "2"
+    for name in ("PYTHONPATH", "pythonstartup", "LD_PRELOAD", "DYLD_INSERT_LIBRARIES"):
+        assert name not in os.environ
+    assert projects.current_env.blocked == [
+        "DYLD_INSERT_LIBRARIES", "LD_PRELOAD", "PYTHONPATH", "pythonstartup"]
+    assert "LD_PRELOAD" in caplog.text and "/evil.so" not in caplog.text
+
+
 def test_registry_project_with_an_untrusted_env_opens_without_it(isolated):
     proj = _project(isolated / "cloned", env="P4_SECRET=1\nPYTHONPATH=/evil\n")
     os.environ.pop("P4_SECRET", None)

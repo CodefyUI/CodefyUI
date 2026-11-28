@@ -89,6 +89,14 @@ BLOCKED_PATTERNS: tuple[str, ...] = (
     "*_PROXY", "SSL_CERT_*", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
 )
 
+#: Names no project's .env may set, not even the project the operator named
+#: with ``--project`` / ``CODEFYUI_PROJECT_DIR`` (phase 4C): they choose
+#: which code the interpreter and the dynamic loader run, for this server's
+#: child processes (runs, workers, installs), and a cloned repository could
+#: commit them as easily as anything else. Someone who means it exports
+#: them in their own shell.
+ALWAYS_BLOCKED_PATTERNS: tuple[str, ...] = ("PYTHON*", "LD_*", "DYLD_*")
+
 #: Names libraries read once, at import or first use, so a value applied by
 #: a run-time switch has no effect until the server restarts. Reported back
 #: to the user, never refused.
@@ -113,6 +121,11 @@ def _matches(name: str, patterns: tuple[str, ...]) -> bool:
 
 def is_blocked(name: str) -> bool:
     return _matches(name, BLOCKED_PATTERNS)
+
+
+def is_always_blocked(name: str) -> bool:
+    """Blocked even for the project named at start-up (``--project``)."""
+    return _matches(name, ALWAYS_BLOCKED_PATTERNS)
 
 
 def needs_restart(name: str) -> bool:
@@ -146,14 +159,15 @@ def apply_project_env(values: dict[str, str], *, enforce_blocklist: bool) -> dic
     wins) and remember what was applied, for :func:`unload_project_env`.
 
     ``enforce_blocklist`` is off only for a project the operator named at
-    start-up (``--project``), which keeps today's behaviour for it.
+    start-up (``--project``), which then skips only the names that choose
+    which code runs (:data:`ALWAYS_BLOCKED_PATTERNS`).
     Returns the names ``applied``, ``blocked``, ``kept`` (already set in
     the environment) and ``restart`` (applied, but read only at start).
     Values are never returned or logged.
     """
     report: dict[str, list[str]] = {"applied": [], "blocked": [], "kept": [], "restart": []}
     for name, value in values.items():
-        if enforce_blocklist and is_blocked(name):
+        if is_blocked(name) if enforce_blocklist else is_always_blocked(name):
             report["blocked"].append(name)
             continue
         if name in os.environ:

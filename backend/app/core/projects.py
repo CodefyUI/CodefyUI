@@ -32,7 +32,14 @@ from typing import Any
 
 from ..config import Settings, _user_data_root, settings
 from .fs_paths import canonical_path
-from .dotenv import apply_project_env, is_blocked, is_endpoint, read_dotenv, unload_project_env
+from .dotenv import (
+    apply_project_env,
+    is_always_blocked,
+    is_blocked,
+    is_endpoint,
+    read_dotenv,
+    unload_project_env,
+)
 from .project import PROJECT_MANIFEST, _atomic_write, collect_graph_files, read_project_manifest
 
 logger = logging.getLogger(__name__)
@@ -241,8 +248,9 @@ def load_project_env(project: Path, *, explicit: bool = False) -> EnvStatus:
     """Load *project*'s ``.env`` if it may be loaded, and record how it went.
 
     ``explicit`` is the project the operator named at start-up: loaded
-    whatever it holds, without the blocklist, as before phase 4A, and its
-    current contents recorded as trusted.
+    without asking and without the run-time blocklist, its current contents
+    recorded as trusted -- except the names that choose which code runs
+    (``PYTHON*``, ``LD_*``, ``DYLD_*``), which no .env may set (phase 4C).
     """
     global current_env
     values = read_dotenv(project / ".env")
@@ -252,7 +260,14 @@ def load_project_env(project: Path, *, explicit: bool = False) -> EnvStatus:
     names = sorted(values)
     blocked = sorted(name for name in names if is_blocked(name))
     state = "trusted" if explicit else env_trust_state(project)
-    status = EnvStatus(state=state, names=names, blocked=[] if explicit else blocked,
+    if explicit:
+        blocked = sorted(name for name in names if is_always_blocked(name))
+        if blocked:
+            logger.warning(
+                "%s/.env sets %s, which a project's .env may not set; skipped. "
+                "Export them in your own shell if you mean them.",
+                project, ", ".join(blocked))
+    status = EnvStatus(state=state, names=names, blocked=blocked,
                        endpoints=[name for name in names
                                   if is_endpoint(name) and name not in blocked])
     if state == "trusted":
