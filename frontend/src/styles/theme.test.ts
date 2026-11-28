@@ -536,8 +536,8 @@ describe('density tokens (phase 5)', () => {
     return parseFloat(value);
   };
 
-  it('keeps the toolbar row a control plus 8px above and below', () => {
-    expect(px('--h-toolbar')).toBe(px('--h-control-sm') + 2 * 8);
+  it('keeps the toolbar row a control plus 15px of padding and its 1px rule', () => {
+    expect(px('--h-toolbar')).toBe(px('--h-control-sm') + 15 + 1);
   });
 
   it('keeps list rows at or above the 24px target floor', () => {

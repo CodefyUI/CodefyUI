@@ -201,7 +201,7 @@
   --h-control-lg: 40px; /* primary actions, menu rows, dialog buttons */
   --h-row: 36px; /* list row in the node palette */
   /* Phase 5 (density). */
-  --h-toolbar: 44px; /* the graph toolbar: 28px controls, 8px above and below */
+  --h-toolbar: 44px; /* the graph toolbar: a 28px control row, 7.5px above and below, the 1px rule */
   --h-row-compact: 28px; /* a name-only list row (palette "names only") */
   --h-row-section: 30px; /* a collapsible category header in a list */
 
