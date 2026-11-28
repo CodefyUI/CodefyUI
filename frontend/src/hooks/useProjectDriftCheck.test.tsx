@@ -26,13 +26,18 @@ function Probe() {
   return <span data-testid="stale">{String(stale)}</span>;
 }
 
+const loadOverview = vi.fn(async () => null);
+const realLoadOverview = useProjectStore.getState().loadOverview;
+
 beforeEach(() => {
   _resetDriftCheckForTesting();
-  useProjectStore.setState({ projectDir: '/p/alpha', projectName: 'alpha', loaded: true, stale: false });
+  useProjectStore.setState({ projectDir: '/p/alpha', projectName: 'alpha', loaded: true,
+    stale: false, loadOverview });
 });
 
 afterEach(() => {
   vi.clearAllMocks();
+  useProjectStore.setState({ loadOverview: realLoadOverview });
 });
 
 describe('the project drift check', () => {
@@ -82,5 +87,14 @@ describe('the project drift check', () => {
     await checkProjectDrift(40_000);
     expect(health).toHaveBeenCalledTimes(1);
     expect(useProjectStore.getState().stale).toBe(false);
+  });
+
+  it('re-reads the overview when the project is the same, so a pulled mods/ is noticed', async () => {
+    answer('/p/alpha');
+    await checkProjectDrift(0);
+    expect(loadOverview).toHaveBeenCalledTimes(1);
+    answer('/p/beta');
+    await checkProjectDrift(DRIFT_CHECK_INTERVAL_MS * 2);
+    expect(loadOverview).toHaveBeenCalledTimes(1);   // another project: stale, not re-read
   });
 });

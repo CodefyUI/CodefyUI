@@ -479,7 +479,8 @@ function modsScan(patch: Partial<projectsApi.ModsScan> = {}): projectsApi.ModsSc
       { path: 'nodes/loss.py', size: 420, role: 'node', sha256: '1'.repeat(64), lines: 18,
         finding: null, needs: [], nodes: ['FocalLoss'] },
       { path: 'nodes/fetch.py', size: 900, role: 'node', sha256: '2'.repeat(64), lines: 30,
-        finding: { line: 3, message: "import of 'socket' is not allowed" },
+        finding: { line: 3, kind: 'import', module: 'socket', capability: 'network',
+          message: 'line 3: imports socket: needs network' },
         needs: [{ capability: 'network', summary: 'open network connections' }],
         nodes: ['Fetch'] },
       { path: 'presets/aug.json', size: 120, role: 'preset', sha256: '3'.repeat(64) },
@@ -518,8 +519,10 @@ describe('Mods consent', () => {
     expect(rows[0].textContent).toContain('18 lines');
     expect(rows[0].textContent).toContain('no findings');
     expect(rows[0].textContent).toContain('project:FocalLoss');
-    expect(rows[1].textContent).toContain("line 3: import of 'socket' is not allowed");
-    expect(rows[1].textContent).toContain('open network connections');
+    // In mods' words, the capability in the page's language; never the
+    // plugin gate's text about a plugin manifest.
+    expect(rows[1].textContent).toContain('Line 3 imports socket: needs network');
+    expect(rows[1].textContent).not.toContain('manifest');
     fireEvent.click(within(dialog).getByTestId('mods-trust'));
     await waitFor(() => expect(api.trustProjectMods).toHaveBeenCalledWith(MODS_DIGEST, false));
     await waitFor(() => expect(screen.queryByTestId('project-mods-consent')).toBeNull());
@@ -584,8 +587,15 @@ describe('Mods consent', () => {
       mods: { state: 'trusted', loaded: true, needs_consent: false, restart_recommended: true },
     }) });
     await renderSettled(<ProjectChip />);
-    expect(screen.getByTestId('project-chip-restart').textContent).toBe('restart recommended');
+    // An icon beside the name, never text that squeezes it (phase 4C round 1).
+    const icon = screen.getByTestId('project-chip-restart');
+    expect(icon.getAttribute('aria-label')).toBe('restart recommended');
+    expect(icon.textContent).toBe('');
+    expect(screen.getByTestId('project-chip-name').textContent).toBe('alpha');
     fireEvent.click(screen.getByRole('button', { name: /alpha/ }));
+    const rows = await screen.findAllByRole('menuitem');
+    expect(rows[0].textContent).toContain('Another project’s mods ran in this server');
+    expect(rows[0].getAttribute('aria-disabled')).toBe('true');
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Review mods/' }));
     expect(useProjectStore.getState().modsReviewOpen).toBe(true);
     act(() => useProjectStore.getState().closeModsReview());
@@ -617,5 +627,41 @@ describe('Mods consent', () => {
       ] });
     });
     expect(screen.queryByTestId('mods-not-loaded-banner')).toBeNull();
+  });
+});
+
+
+describe('Mods round 2', () => {
+  it('marks the files that never load, after the ones that do', async () => {
+    useProjectStore.setState({ overview: overview({ mods: MODS_NEEDS }) });
+    api.getProjectMods.mockResolvedValue(modsScan({
+      files: [
+        { path: 'nodes/loss.py', size: 420, role: 'node', sha256: '1'.repeat(64), lines: 18,
+          finding: null, needs: [], nodes: ['FocalLoss'], loads: true },
+        { path: 'conftest.py', size: 30, role: 'other', sha256: '4'.repeat(64), loads: false },
+        { path: 'nodes/__init__.py', size: 10, role: 'other', sha256: '5'.repeat(64), loads: false },
+      ],
+    }));
+    await renderSettled(<ProjectNotices />);
+    const dialog = await screen.findByTestId('project-mods-consent');
+    const rows = await within(dialog).findAllByTestId('mods-file');
+    expect(within(rows[0]).queryByTestId('mods-never-loaded')).toBeNull();
+    for (const row of rows.slice(1)) {
+      expect(within(row).getByTestId('mods-never-loaded').textContent).toBe('not loaded');
+    }
+  });
+
+  it('says when mods/ changed on disk, and checks only when asked', async () => {
+    useProjectStore.setState({ overview: overview({
+      mods: { state: 'trusted', loaded: true, needs_consent: false, disk_changed: true },
+    }) });
+    const reload = vi.spyOn(useNodeDefStore.getState(), 'reload').mockResolvedValue(undefined);
+    await renderSettled(<ProjectNotices />);
+    const banner = screen.getByTestId('mods-disk-changed');
+    expect(banner.textContent).toContain('What runs is still the version loaded before');
+    expect(reload).not.toHaveBeenCalled();
+    fireEvent.click(within(banner).getByRole('button', { name: 'Reload and check' }));
+    expect(reload).toHaveBeenCalledTimes(1);
+    reload.mockRestore();
   });
 });

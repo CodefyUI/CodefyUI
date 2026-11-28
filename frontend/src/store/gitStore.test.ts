@@ -2365,3 +2365,22 @@ describe('the identity form', () => {
     expect(git().identityFormOpen).toBe(false);
   });
 });
+
+describe('mods/ after a worktree write (phase 4C)', () => {
+  it('re-reads the project status after a write that can change files, not after others', async () => {
+    useGitStore.setState({ applyWorktreeChange: vi.fn() });
+    const saved = useProjectStore.getState();
+    const loadOverview = vi.fn(async () => null);
+    useProjectStore.setState({ projectDir: '/p/alpha', loadOverview });
+    try {
+      api.gitDiscard.mockResolvedValue(mutation({ status: status(), changed_paths: ['mods/nodes/x.py'] }));
+      expect(await git().discard(['mods/nodes/x.py'])).toBe(true);
+      expect(loadOverview).toHaveBeenCalledTimes(1);
+      api.gitStage.mockResolvedValue(mutation({ status: status() }));
+      await git().stage(['a']);
+      expect(loadOverview).toHaveBeenCalledTimes(1);   // staging changes no file
+    } finally {
+      useProjectStore.setState({ projectDir: saved.projectDir, loadOverview: saved.loadOverview });
+    }
+  });
+});

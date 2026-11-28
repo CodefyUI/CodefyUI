@@ -64,6 +64,17 @@ export function ProjectChip() {
     : t(dirty ? 'projects.chip.titleDirty' : 'projects.chip.titleBranch', { name: label, branch });
 
   const items: ActionMenuItem[] = [];
+  const restart = overview?.mods?.restart_recommended === true;
+  if (restart) {
+    // The whole sentence here; the chip itself only carries an icon, so the
+    // project's name keeps the room (phase 4C review, round 1).
+    items.push({
+      id: 'restart-recommended',
+      label: t('projects.chip.restartTitle'),
+      disabled: true,
+      onSelect: () => undefined,
+    });
+  }
   if (branch) {
     // First, so a narrow window that hides the branch on the chip still
     // says it (and whether there is anything to commit) one click away.
@@ -117,10 +128,14 @@ export function ProjectChip() {
         className={`${styles.chip} ${projectName ? '' : styles.chipFlat}`}
       >
         <span className={styles.chipName} data-testid="project-chip-name">{label}</span>
-        {overview?.mods?.restart_recommended && (
-          <span className={styles.chipRestart} title={t('projects.chip.restartTitle')}
+        {restart && (
+          <span className={styles.chipRestart} role="img"
+            aria-label={t('projects.chip.restart')} title={t('projects.chip.restartTitle')}
             data-testid="project-chip-restart">
-            {t('projects.chip.restart')}
+            <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+              <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 2.5v2.6h-2.6" fill="none"
+                stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
           </span>
         )}
         {branch && (

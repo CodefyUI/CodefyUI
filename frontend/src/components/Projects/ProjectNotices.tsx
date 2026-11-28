@@ -2,6 +2,7 @@ import { Suspense, useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { PROJECT_CHANGED_EVENT } from '../../api/_auth';
 import { useI18n } from '../../i18n';
+import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useProjectStore } from '../../store/projectStore';
 import { useToastStore } from '../../store/toastStore';
 import { takeAfterSwitchNotice } from '../../utils/projectSwitch';
@@ -118,6 +119,20 @@ export function ProjectNotices() {
 
   return (
     <>
+      {!stale && overview?.mods?.disk_changed && createPortal(
+        <div role="status" className={styles.modsDiskBanner} data-testid="mods-disk-changed">
+          <span>{t('projects.mods.diskChanged')}</span>
+          <button type="button" onClick={() => {
+            void useNodeDefStore.getState().reload().catch((err: unknown) => {
+              useToastStore.getState().addToast(
+                err instanceof Error ? err.message : String(err), 'error');
+            });
+          }}>
+            {t('projects.mods.checkNow')}
+          </button>
+        </div>,
+        document.body,
+      )}
       {stale && createPortal(
         <div role="alert" className={styles.staleBanner} data-testid="project-stale-banner">
           <span>{t('projects.stale.message')}</span>

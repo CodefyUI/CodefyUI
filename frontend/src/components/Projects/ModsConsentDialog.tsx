@@ -1,9 +1,11 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  formatBytes, getProjectMods, ProjectError, trustProjectMods, type ModsFile, type ModsScan,
+  formatBytes, getProjectMods, ProjectError, trustProjectMods,
+  type ModsFile, type ModsFinding, type ModsScan,
 } from '../../api/projects';
 import { useI18n } from '../../i18n';
+import { capabilityKey } from '../PluginCenter/pluginStatus';
 import { useNodeDefStore } from '../../store/nodeDefStore';
 import { useProjectStore } from '../../store/projectStore';
 import { useTabStore } from '../../store/tabStore';
@@ -174,31 +176,73 @@ export function ModsConsentDialog({ project, onClose }: { project: string; onClo
   );
 }
 
+type Translate = ReturnType<typeof useI18n.getState>['t'];
+
+/** A capability in the page's language: its sentence, or the raw id. */
+function capabilityText(t: Translate, id: string): string {
+  const key = capabilityKey(id);
+  return key ? t(key) : id;
+}
+
+/**
+ * The scan's finding in the words of a project's mods (phase 4C review,
+ * round 1): the plugin gate's own text tells an author to edit a plugin
+ * manifest, which a project does not have, and it is English only.
+ */
+export function findingText(t: Translate, finding: ModsFinding): string {
+  const line = finding.line ?? 0;
+  const at = finding.line !== null;
+  switch (finding.kind) {
+    case 'import':
+      return t('projects.mods.finding.import', {
+        line, module: finding.module ?? '',
+        capability: capabilityText(t, finding.capability ?? ''),
+      });
+    case 'blocked_import':
+      return t('projects.mods.finding.blockedImport', { line, module: finding.module ?? '' });
+    case 'refused':
+      return finding.construct
+        ? t('projects.mods.finding.refusedNamed', { line, construct: finding.construct })
+        : t('projects.mods.finding.refused', { line });
+    case 'syntax':
+      return at ? t('projects.mods.finding.syntax', { line }) : t('projects.mods.finding.syntaxNoLine');
+    default:
+      return t('projects.mods.finding.unreadable');
+  }
+}
+
 function ModsFileRow({ file, mark }: { file: ModsFile; mark: Mark }) {
   const { t } = useI18n();
   const facts = [formatBytes(file.size)];
   if (file.lines !== undefined) facts.push(t('projects.mods.lines', { count: file.lines }));
+  const never = file.loads === false;
   return (
-    <li className={styles.modsRow} data-testid="mods-file">
+    <li className={`${styles.modsRow} ${never ? styles.modsRowNever : ''}`} data-testid="mods-file">
       <div className={styles.modsHead}>
         <code className={styles.modsPath}>mods/{file.path}</code>
         <span className={styles.hint}>{facts.join(' · ')}</span>
         {mark && <span className={styles.badge}>{t(`projects.mods.${mark}`)}</span>}
+        {never && (
+          <span className={styles.modsNever} title={t('projects.mods.neverLoadedTitle')}
+            data-testid="mods-never-loaded">
+            {t('projects.mods.neverLoaded')}
+          </span>
+        )}
       </div>
+      {never && <span className={styles.hint}>{t('projects.mods.neverLoadedTitle')}</span>}
       {file.role === 'node' && (
         <div className={styles.modsFacts}>
           {file.finding ? (
-            <span className={styles.rowWarn}>
-              {file.finding.line !== null
-                ? t('projects.mods.finding', { line: file.finding.line, message: file.finding.message })
-                : t('projects.mods.findingNoLine', { message: file.finding.message })}
-            </span>
+            <span className={styles.rowWarn}>{findingText(t, file.finding)}</span>
           ) : (
             <span className={styles.hint}>{t('projects.mods.clean')}</span>
           )}
-          {(file.needs?.length ?? 0) > 0 && (
+          {/* The finding already names the capability its import needs. */}
+          {!file.finding && (file.needs?.length ?? 0) > 0 && (
             <span className={styles.hint}>
-              {t('projects.mods.needs', { names: file.needs!.map((n) => n.summary).join('; ') })}
+              {t('projects.mods.needs', {
+                names: file.needs!.map((n) => capabilityText(t, n.capability)).join('; '),
+              })}
             </span>
           )}
           {(file.nodes?.length ?? 0) > 0 && (

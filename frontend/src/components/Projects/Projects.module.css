@@ -478,10 +478,60 @@
 }
 
 .chipRestart {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
   color: var(--status-warning);
+}
+
+.modsRowNever {
+  opacity: 0.75;
+}
+
+.modsNever {
+  padding: 0 var(--sp-2);
+  color: var(--text-muted);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-pill);
   font-size: var(--fs-xs);
-  font-weight: var(--fw-normal);
+}
+
+/* ── mods/ changed on disk (not blocking: the page stays usable) ── */
+
+.modsDiskBanner {
+  position: fixed;
+  top: calc(var(--sp-8) + var(--sp-6));
+  left: 50%;
+  z-index: 8800;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  max-width: min(720px, calc(100vw - var(--sp-8)));
+  padding: var(--sp-2) var(--sp-3);
+  color: var(--text-primary);
+  background: var(--surface-panel);
+  border: 1px solid var(--status-warning);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  font-size: var(--fs-sm);
+  transform: translateX(-50%);
+}
+
+.modsDiskBanner button {
+  min-height: var(--h-control-sm);
+  padding: 0 var(--sp-3);
+  color: var(--text-primary);
+  background: transparent;
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-sm);
+  font: inherit;
+  cursor: pointer;
   white-space: nowrap;
+}
+
+.modsDiskBanner button:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 /* ── the tab banner: a graph uses mods that are not loaded ── */

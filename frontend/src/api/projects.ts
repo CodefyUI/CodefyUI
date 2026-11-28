@@ -61,6 +61,22 @@ export interface ModsStatus {
   needs_consent: boolean;
   /** With needs_consent: the tree's digest, what "not now" is kept against. */
   digest?: string | null;
+  /**
+   * mods/ on disk differs from the tree the last load looked at (a pull
+   * since). What runs is still what was loaded; the next load checks it.
+   */
+  disk_changed?: boolean;
+}
+
+/** What the scan found in a node file, in mods' terms (never the plugin gate's text). */
+export interface ModsFinding {
+  line: number | null;
+  kind: 'import' | 'blocked_import' | 'refused' | 'syntax' | 'unreadable';
+  module?: string;
+  capability?: string;
+  construct?: string | null;
+  /** The English sentence the CLI prints. */
+  message: string;
 }
 
 /** One file under `mods/`, as the trust prompt lists it. */
@@ -70,7 +86,10 @@ export interface ModsFile {
   role: 'node' | 'preset' | 'other';
   sha256: string;
   lines?: number;
-  finding?: { line: number | null; message: string } | null;
+  /** False for a file CodefyUI never reads (not a node file, not a preset). */
+  loads?: boolean;
+  reason?: string;
+  finding?: ModsFinding | null;
   needs?: { capability: string; summary: string }[];
   nodes?: string[];
   duplicates?: string[];
