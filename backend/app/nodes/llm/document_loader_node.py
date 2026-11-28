@@ -38,6 +38,8 @@ from ...core.node_base import (
     PortDefinition,
 )
 
+from ...core.data_paths import missing_path_hint
+
 logger = logging.getLogger(__name__)
 
 #: The two things the ``source`` param may say.
@@ -77,10 +79,10 @@ def _resolve_document_path(path_str: str, *, kind: str) -> Path:
        ABSOLUTE path is honoured as typed, here and in every other reader
        node in this project, because a learner pointing at a folder of their
        own notes is the ordinary case.) The exception is a path under
-       ``data/samples/``: that names the INSTALL, not the project, and
-       ``CSVReader`` already carves out the same hole for ``iris.csv`` so its
-       demo keeps working in project mode. The exemption is a prefix test, so
-       it also requires that no component is ``..`` -- otherwise
+       ``data/samples/``, which names a bundled sample: the project's copy
+       when it has one, else the install's. That rule is shared by every
+       reader node (``core.data_paths.resolve_bundled_sample``, round 6) and
+       requires that no component is ``..`` -- otherwise
        ``data/samples/../../elsewhere`` would wear the prefix and land
        anywhere.
     4. Otherwise: the backend working directory first, then ``backend/``.
@@ -89,7 +91,7 @@ def _resolve_document_path(path_str: str, *, kind: str) -> Path:
     say which field to fix.
     """
     from ...config import settings
-    from ...core.data_paths import working_dir_file
+    from ...core.data_paths import resolve_bundled_sample, working_dir_file
 
     path = Path(path_str)
     if path.is_absolute():
@@ -118,14 +120,14 @@ def _resolve_document_path(path_str: str, *, kind: str) -> Path:
     # Windows would otherwise find nothing on a Linux machine.
     normalised = path_str.replace("\\", "/")
     relative = Path(normalised)
-    # The prefix is not enough on its own: ``data/samples/../../elsewhere``
-    # starts with it and ends outside the install, so the exemption also
-    # requires that the path only ever goes downwards.
-    is_bundled_sample = (
-        normalised.startswith("data/samples/")
-        and ".." not in relative.parts)
+    # ``data/samples/...`` (only ever downwards: ``data/samples/../../x``
+    # wears the prefix and lands anywhere) names a bundled sample: the
+    # project's copy when it has one, else the install's. One rule for every
+    # reader node, in core.data_paths (round 6 H0).
+    if (sample := resolve_bundled_sample(path_str)) is not None:
+        return sample
 
-    if settings.PROJECT_DIR is not None and not is_bundled_sample:
+    if settings.PROJECT_DIR is not None:
         project = settings.PROJECT_DIR.resolve()
         resolved = (project / relative).resolve()
         if not resolved.is_relative_to(project):
@@ -372,7 +374,8 @@ class DocumentLoaderNode(BaseNode):
         root = _resolve_document_path(directory, kind="directory")
         if not root.is_dir():
             raise FileNotFoundError(
-                f"DocumentLoader: no folder at {root}. Check `directory`.")
+                f"DocumentLoader: no folder at {root}. Check `directory`."
+                + missing_path_hint(directory, root))
 
         walk = root.rglob if bool(params.get("recursive", False)) else root.glob
         # Sorted by the SOURCE string each path will carry, not by ``Path``
@@ -432,7 +435,8 @@ class DocumentLoaderNode(BaseNode):
         path = _resolve_document_path(file_str, kind="file")
         if not path.is_file():
             raise FileNotFoundError(
-                f"DocumentLoader: no file at {path}. Check `file`.")
+                f"DocumentLoader: no file at {path}. Check `file`."
+                + missing_path_hint(file_str, path))
 
         # The upload button takes anything; this node reads two suffixes.
         # Refused by name rather than decoded hopefully, because a PDF read

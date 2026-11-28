@@ -22,6 +22,10 @@ received — each links to the release it was published as.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The bundled digits examples run in a project again.** In 3.4.0's default project mode `CSVReader` resolved `data/samples/digits.csv` inside the project, so the seven examples that read it failed with "file not found"; only `data/samples/iris.csv` had been exempted. Every reader node (`CSVReader`, `DocumentLoader`, `TextCorpusDataset`) now shares one rule: a relative `data/samples/...` path without `..` names a bundled sample, read from the project when the project has a file at that path and from the install otherwise, whatever the working directory. A missing file's error names every place that was looked in and, when the path looks like a sample, lists the samples that exist.
+
 ## [3.4.0] — 2026-11-28
 
 ### Added
