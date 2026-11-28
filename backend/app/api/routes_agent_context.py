@@ -4,7 +4,8 @@ Not to be confused with ``app.agent``, the remote worker agent: this is
 the editor-side context an in-browser agent (the Graph Copilot) reads once
 per conversation.
 
-- ``project``: the open project (``dir``, ``name``, ``graphs``), or null
+- ``project``: the open project (``dir``, ``name``, ``graphs``, and since
+  round 6 ``git``, ``graph_format`` and ``mods: {state, nodes}``), or null
   outside project mode.
 - ``instructions``: ``<PROJECT_DIR>/AGENTS.md``, the project's standing
   instructions to any agent, cut at 32 KB; null when there is none.
@@ -70,6 +71,21 @@ def _instructions(project_dir: Path) -> dict | None:
     return {"path": INSTRUCTIONS_FILE, "content": text, "truncated": truncated}
 
 
+def _project_facts(project_dir: Path) -> dict:
+    """Round 6: whether the project is a git repository, the form new graphs
+    are saved in, and the state of its mods with the node types they
+    registered (``project:<NAME>``). Booleans and names, not file content."""
+    from ..core import mods
+    from ..core.graph_storage import manifest_graph_format
+
+    status = mods.current_status(project_dir)
+    return {
+        "git": mods._git_repo(project_dir),
+        "graph_format": "dir" if manifest_graph_format(project_dir) == "dir" else "file",
+        "mods": {"state": status["state"], "nodes": list(status["nodes"])},
+    }
+
+
 @router.get("/context")
 def agent_context() -> dict:
     project_dir = settings.PROJECT_DIR
@@ -80,6 +96,7 @@ def agent_context() -> dict:
             "dir": str(project_dir),
             "name": _project_name(project_dir),
             "graphs": _graph_names(),
+            **_project_facts(project_dir),
         }
         instructions = _instructions(project_dir)
     skills = [

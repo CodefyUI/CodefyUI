@@ -38,6 +38,7 @@ from starlette.convertors import Convertor, register_url_convertor
 
 from .api import (
     routes_agent_context,
+    routes_agent_files,
     routes_apps,
     routes_custom_nodes,
     routes_examples,
@@ -847,6 +848,7 @@ app.include_router(routes_system.router)
 app.include_router(routes_llm.router)
 app.include_router(routes_skills.router)
 app.include_router(routes_agent_context.router)
+app.include_router(routes_agent_files.router)
 app.include_router(routes_apps.router)
 app.include_router(routes_keys.router)
 app.include_router(ws_execution.router)

@@ -356,7 +356,10 @@ async def test_context_in_project_mode(client, roots, monkeypatch):
     monkeypatch.setattr(settings, "PROJECT_DIR", project)
     monkeypatch.setattr(settings, "GRAPHS_DIR", project / "graphs")
     context = (await client.get("/api/agent/context")).json()
-    assert context["project"] == {"dir": str(project), "name": "my-service", "graphs": ["serve", "train"]}
+    assert context["project"] == {"dir": str(project), "name": "my-service", "graphs": ["serve", "train"],
+                                  # Round 6: additive facts.
+                                  "git": False, "graph_format": "file",
+                                  "mods": {"state": "none", "nodes": []}}
     assert context["instructions"] == {"path": "AGENTS.md", "content": "Always seed.\n", "truncated": False}
 
 

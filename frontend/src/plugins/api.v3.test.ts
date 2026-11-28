@@ -281,6 +281,25 @@ describe('runs facade', () => {
     expect(new Headers(init.headers).get('X-CodefyUI-Token')).toBe('super-secret-token');
   });
 
+  it("a GET to the host's /api/agent/ carries the token; other GETs do not", async () => {
+    // Round 6 H5: the agent file routes take the token at route level.
+    _setSessionTokenForTesting('super-secret-token');
+    const fetchMock = mockFetch({});
+    const api = freshApi();
+    await api.http.fetch('/api/agent/files?path=notes');
+    await api.http.fetch(`${window.location.origin}/api/agent/data-files`);
+    await api.http.fetch('/api/agent/context');
+    await api.http.fetch('/api/skills');
+    await api.http.fetch('https://api.example.com/api/agent/files');
+    const token = (i: number) =>
+      new Headers((fetchMock.mock.calls[i][1] as RequestInit | undefined)?.headers)
+        .get('X-CodefyUI-Token');
+    expect([0, 1, 2].map(token)).toEqual(['super-secret-token', 'super-secret-token', 'super-secret-token']);
+    // Unchanged for every other GET, and never to another origin.
+    expect(token(3)).toBeNull();
+    expect(token(4)).toBeNull();
+  });
+
   it('the host sends the token to its own origin only: a plugin POST to another origin is refused and nothing goes out', async () => {
     // Before #482 this went out with the token attached, and whether the token
     // left the machine was up to the other server's CORS preflight.

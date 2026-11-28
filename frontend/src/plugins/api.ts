@@ -796,6 +796,18 @@ function warnIfUnknownNodeType(pluginId: string, nodeType: string): void {
   );
 }
 
+/** Whether *url* names this page's own `/api/agent/...`. */
+export function isOwnAgentRoute(url: unknown): boolean {
+  const raw = typeof Request !== 'undefined' && url instanceof Request ? url.url : String(url);
+  try {
+    const resolved = new URL(raw, document.baseURI);
+    return resolved.origin === window.location.origin
+      && resolved.pathname.startsWith('/api/agent/');
+  } catch {
+    return false;
+  }
+}
+
 export function buildPluginAPI(
   pluginId: string,
   getWidgetContainer: (id: string) => HTMLElement,
@@ -905,7 +917,10 @@ export function buildPluginAPI(
       metrics: (id, name) => getRunMetrics(id, name),
     },
     http: {
-      fetch: (url, init) => apiFetch(url, init),
+      // A GET to this server's /api/agent/ (project files, data files) carries
+      // the session token too: those reads take it at route level, and the
+      // token only goes to this page's own origin (round 6 H5).
+      fetch: (url, init) => apiFetch(url, init, { authenticate: isOwnAgentRoute(url) }),
     },
     storage: {
       get: (key) => window.localStorage.getItem(ns(key)),

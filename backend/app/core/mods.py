@@ -400,7 +400,36 @@ def record_trust(project: Path, tree: ModsTree, *, full: bool) -> None:
         mods_head=_git_head(project),
         mods_full=bool(full),
         mods_trusted_at=projects._now(),
+        # The user agreed to (or, owned and unmoved, already had) exactly
+        # this tree: whatever an agent wrote into it has been seen.
+        mods_agent_pending={},
     )
+
+
+def mark_agent_write(project: Path, rel: str, sha256: str) -> None:
+    """Record that an agent wrote ``mods/<rel>`` (round 6 H5).
+
+    Called BEFORE the file is replaced, so a crash in between leaves the
+    stricter state. While any such record is pending, the owned-project
+    shortcut in :func:`mods_trust_state` does not apply and a presets-only
+    tree asks too: what an agent wrote is not the owner's own edit. Cleared
+    by :func:`record_trust`, i.e. by the user's consent or by a load that
+    finds the tree already trusted by digest. Lives in ``<USER_DATA>/
+    trust.json``, which no project file and no agent endpoint can reach.
+    """
+    from . import projects
+
+    pending = _entry(project).get("mods_agent_pending")
+    pending = dict(pending) if isinstance(pending, dict) else {}
+    pending[rel] = sha256
+    projects._update_trust(project, mods_agent_pending=pending)
+
+
+def agent_writes_pending(project: Path) -> dict[str, str]:
+    """``{rel under mods/: sha256}`` an agent wrote that the user has not
+    agreed to yet."""
+    pending = _entry(project).get("mods_agent_pending")
+    return dict(pending) if isinstance(pending, dict) else {}
 
 
 def record_baseline(project: Path) -> None:
@@ -421,19 +450,24 @@ def mods_trust_state(project: Path, tree: ModsTree | None = None) -> dict[str, A
     An owned project (created or imported here) is trusted without asking
     while its HEAD has not moved since the record (the owner editing their
     own files), or when it is not a git repository at all; a change that
-    came with a moved HEAD (a pull, a checkout) asks like any other.
+    came with a moved HEAD (a pull, a checkout) asks like any other. A file
+    an agent wrote (:func:`mark_agent_write`) is not the owner's edit: while
+    one is pending the shortcut is off, and presets alone ask too.
     """
     tree = tree or walk_mods(project)
     digest = mods_digest(tree)
     answer: dict[str, Any] = {"digest": digest, "changed": None}
     if tree.refused:
         return {**answer, "state": "blocked"}
-    if not tree.node_files:
-        return {**answer, "state": "none"}
     entry = _entry(project)
+    # Files an agent wrote (round 6 H5): no owner shortcut, and presets alone
+    # ask too, until the user agrees to the tree they are in.
+    agent_pending = bool(entry.get("mods_agent_pending")) and tree.exists
+    if not tree.node_files and not agent_pending:
+        return {**answer, "state": "none"}
     if entry.get("mods_sha256") == digest:
         return {**answer, "state": "trusted", "full": bool(entry.get("mods_full"))}
-    if entry.get("owned") is True:
+    if entry.get("owned") is True and not agent_pending:
         # The owner's own edits load without asking only against a baseline
         # (the HEAD and tree recorded when it was marked owned and at every
         # load, mods or not) whose HEAD has not moved -- or outside git. No
