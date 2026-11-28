@@ -84,9 +84,16 @@ class ModsTree:
         return bool(self.files or self.refused)
 
 
+#: Why a file under mods/ is never loaded (role ``other``): the prompt says
+#: so, so nobody agrees thinking it will run.
+NOT_LOADED_REASON = ("never loaded: only the .py files directly in mods/nodes/ "
+                     "(not __init__.py) and mods/presets/*.json are read")
+
+
 def _role(rel: str) -> str:
     parts = rel.split("/")
-    if len(parts) == 2 and parts[0] == NODES_DIR and parts[1].endswith(".py"):
+    if len(parts) == 2 and parts[0] == NODES_DIR and parts[1].endswith(".py") \
+            and parts[1] != "__init__.py":
         return "node"
     if len(parts) == 2 and parts[0] == PRESETS_DIR and parts[1].endswith(".json"):
         return "preset"
@@ -228,6 +235,60 @@ def _capabilities_needed(source: str) -> list[str]:
     return sorted(found)
 
 
+def _import_at(source: str, line: int | None) -> str | None:
+    """The root module imported on *line*, if that line is an import."""
+    if line is None:
+        return None
+    try:
+        module = ast.parse(source)
+    except SyntaxError:
+        return None
+    for node in ast.walk(module):
+        if getattr(node, "lineno", None) != line:
+            continue
+        if isinstance(node, ast.Import) and node.names:
+            return node.names[0].name.split(".")[0]
+        if isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            return node.module.split(".")[0]
+    return None
+
+
+def _mods_finding(source: str, exc: Exception) -> dict[str, Any]:
+    """``{line, kind, module?, capability?, construct?, message}``.
+
+    ``kind``: ``import`` (a module that needs a capability; ``capability`` is
+    its name, described by ``describe_capability``), ``blocked_import`` (a
+    module nothing unlocks), ``refused`` (a call or attribute the scan does
+    not allow; ``construct`` is the name it quoted, if any) or ``syntax``.
+    ``message`` is the English sentence (CLI); the editor words it from the
+    fields."""
+    import re
+
+    from .security_tiers import capability_for_module, describe_capability
+
+    line = getattr(exc, "lineno", None)
+    text = str(exc)
+    where = f"line {line}: " if line else ""
+    if text.startswith("Syntax error"):
+        return {"line": line, "kind": "syntax",
+                "message": f"{where}the file is not valid Python"}
+    module = _import_at(source, line)
+    if module is not None:
+        capability = capability_for_module(module)
+        if capability:
+            return {"line": line, "kind": "import", "module": module,
+                    "capability": capability,
+                    "message": f"{where}imports {module}: needs {capability} "
+                               f"({describe_capability(capability)})"}
+        return {"line": line, "kind": "blocked_import", "module": module,
+                "message": f"{where}imports {module}, which the scan never allows"}
+    quoted = re.search(r"'([^']{1,60})'", text)
+    construct = quoted.group(1) if quoted else None
+    shown = f" ({construct})" if construct else ""
+    return {"line": line, "kind": "refused", "construct": construct,
+            "message": f"{where}uses a call or attribute the scan does not allow{shown}"}
+
+
 def scan_file(rel: str, data: bytes) -> dict[str, Any]:
     """One node file: the gate's verdict, the capabilities its imports
     would need, its node names. Nothing is imported."""
@@ -241,9 +302,13 @@ def scan_file(rel: str, data: bytes) -> dict[str, Any]:
         validate_python_source(data, rel, allowed_modules=[], capabilities=[],
                                denied_attributes=_denied_attributes_for([]))
     except PluginValidationError as exc:
-        finding = {"line": exc.lineno, "message": str(exc)}
-    except Exception as exc:  # noqa: BLE001 -- the scan must not crash the prompt
-        finding = {"line": None, "message": f"the scan could not read this file: {exc}"}
+        # The gate's verdict and line, in the words of a project's mods: its
+        # own text tells a plugin author to edit a plugin manifest, which a
+        # project does not have.
+        finding = _mods_finding(text, exc)
+    except Exception:  # noqa: BLE001 -- the scan must not crash the prompt
+        finding = {"line": None, "kind": "unreadable",
+                   "message": "the scan could not read this file"}
     needs = _capabilities_needed(text)
     return {
         "path": rel,
@@ -273,10 +338,13 @@ def scan_mods(project: Path, tree: ModsTree | None = None) -> dict[str, Any]:
         for rel in files:
             scans[rel].setdefault("duplicates", []).append(name)
     files = []
-    for rel in sorted(tree.files):
+    # Files that load first, then the ones that never do.
+    for rel in sorted(tree.files, key=lambda r: (tree.files[r].role == "other", r)):
         f = tree.files[rel]
         entry: dict[str, Any] = {"path": rel, "size": f.size, "role": f.role,
-                                 "sha256": f.sha256}
+                                 "sha256": f.sha256, "loads": f.role != "other"}
+        if f.role == "other":
+            entry["reason"] = NOT_LOADED_REASON
         if rel in scans:
             entry.update({k: v for k, v in scans[rel].items() if k != "path"})
         files.append(entry)
@@ -335,6 +403,13 @@ def record_trust(project: Path, tree: ModsTree, *, full: bool) -> None:
     )
 
 
+def record_baseline(project: Path) -> None:
+    """For an owned project: the HEAD and mods/ tree as they are now, even
+    when there are no mods (the "empty" baseline). Called when a project is
+    marked owned and at every server load of an owned project."""
+    record_trust(project, walk_mods(project), full=True)
+
+
 def mods_trust_state(project: Path, tree: ModsTree | None = None) -> dict[str, Any]:
     """``{state, digest, changed: {added, changed, removed}}``.
 
@@ -359,9 +434,13 @@ def mods_trust_state(project: Path, tree: ModsTree | None = None) -> dict[str, A
     if entry.get("mods_sha256") == digest:
         return {**answer, "state": "trusted", "full": bool(entry.get("mods_full"))}
     if entry.get("owned") is True:
-        head = _git_head(project)
-        if not _git_repo(project) or "mods_sha256" not in entry \
-                or entry.get("mods_head") == head:
+        # The owner's own edits load without asking only against a baseline
+        # (the HEAD and tree recorded when it was marked owned and at every
+        # load, mods or not) whose HEAD has not moved -- or outside git. No
+        # baseline (a project owned before 4C) asks: code that arrived with
+        # a pull must never run on the strength of "no record yet".
+        if not _git_repo(project) or (
+                "mods_head" in entry and entry.get("mods_head") == _git_head(project)):
             return {**answer, "state": "trusted", "owned": True,
                     "full": bool(entry.get("mods_full", True))}
     old = entry.get("mods_files") if isinstance(entry.get("mods_files"), dict) else None
@@ -396,6 +475,8 @@ class LoadedMods:
     presets: list[str] = field(default_factory=list)
     skipped: list[dict[str, str]] = field(default_factory=list)
     state: str = "none"
+    #: The digest of the tree the last load looked at (loaded or not).
+    digest: str | None = None
 
 
 _loaded = LoadedMods()
@@ -568,17 +649,17 @@ def load_project_mods(project: Path | None, *, cli: bool = False) -> dict[str, A
         tree = walk_mods(project)
         state = mods_trust_state(project, tree)
         status = state["state"]
+        owned = _entry(project).get("owned") is True
+        if owned and not cli and status in ("none", "trusted"):
+            # The baseline, at every load, mods or not: what a later pull is
+            # compared with.
+            record_trust(project, tree, full=True)
         if status == "none" and tree.files:
             # Presets alone: data, loaded without a prompt.
             _load(project, tree, {}, full=False)
             _loaded.state = "none"
         elif status == "trusted":
             entry = _entry(project)
-            if entry.get("owned") is True and not cli:
-                # The owner's own files: record what was loaded so a later
-                # moved HEAD is compared with this tree.
-                record_trust(project, tree, full=True)
-                entry = _entry(project)
             if cli and entry.get("mods_sha256") != state["digest"]:
                 _loaded.project, _loaded.state = str(project), "untrusted"
             else:
@@ -586,6 +667,8 @@ def load_project_mods(project: Path | None, *, cli: bool = False) -> dict[str, A
                       full=bool(entry.get("mods_full")))
         else:
             _loaded.project, _loaded.state = str(project), status
+        _loaded.project = str(project)
+        _loaded.digest = state["digest"]
         return current_status(project)
 
 
@@ -597,7 +680,11 @@ def current_status(project: Path | None) -> dict[str, Any]:
     """``{state, loaded, nodes, presets, skipped, restart_recommended}``
     for *project* as this process last loaded it."""
     mine = project is not None and _loaded.project == str(project)
+    # The tree on disk now, against the one the last load looked at: a pull
+    # since then is reported, never loaded, until the next load checks it.
+    disk_changed = bool(mine and mods_digest(walk_mods(project)) != _loaded.digest)
     return {
+        "disk_changed": disk_changed,
         "state": _loaded.state if mine else "none",
         "loaded": bool(mine and (_loaded.nodes or _loaded.presets)),
         "nodes": list(_loaded.nodes) if mine else [],

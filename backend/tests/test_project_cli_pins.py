@@ -210,6 +210,8 @@ def test_restore_asks_before_installing_what_the_lockfile_lacks(tmp_path, monkey
 
     def fake_install(owner, repo, ref, args, lockfile):
         calls.append((args.no_confirm, args.accept_capabilities))
+        # The preview names restore's own consent, not --trust-author.
+        assert args.consent_flag == "--yes"
         return 0
 
     monkeypatch.setattr(project, "_install_github", fake_install)

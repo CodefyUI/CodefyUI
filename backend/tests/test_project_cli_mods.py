@@ -151,10 +151,11 @@ def test_an_owned_project_is_not_auto_trusted_outside_the_server(isolated, monke
     # Pinned: a test earlier in the run may have started the app's lifespan
     # in this process, which marks it the server.
     monkeypatch.setattr(mods, "_server_process", False)
-    p = _project(isolated / "svc", {"nodes/loss.py": NODE})
-    projects.mark_owned(p)
+    p = _project(isolated / "svc", {})
+    projects.mark_owned(p)                     # created here, no mods yet
+    _write(p / "mods" / "nodes" / "loss.py", NODE)   # the owner adds one
     assert mods.load_project_mods(p)["loaded"] is False   # not the server process
-    assert "mods_sha256" not in mods._entry(p)
+    assert mods._entry(p).get("mods_sha256") is None      # nothing recorded for it
 
 
 def test_an_owned_project_loads_and_records_in_the_server(isolated, monkeypatch):  # noqa: F811

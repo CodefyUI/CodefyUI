@@ -230,10 +230,12 @@ def _new_project_target(name: str, parent_raw: str | None) -> Path:
 
 
 def _make_project(target: Path, name: str) -> bool:
-    """Scaffold, mark owned (this install made it), git init and commit."""
+    """Scaffold, git init and commit, then mark owned (this install made
+    it): after the commit, so the mods baseline records that HEAD."""
     scaffold_project(target, name)
+    git_ready = init_new_project_repo(target)
     projects.mark_owned(target)
-    return init_new_project_repo(target)
+    return git_ready
 
 
 @router.post("/create")

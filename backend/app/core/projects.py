@@ -192,8 +192,13 @@ def _update_trust(project: Path, **changes: Any) -> None:
 
 def mark_owned(project: Path) -> None:
     """This install created or imported *project*: its ``.env`` is trusted
-    whatever it later holds, as a file the user wrote."""
+    whatever it later holds, as a file the user wrote. Its mods/ baseline
+    (HEAD and tree, even empty) is recorded too: the owner's own mods load
+    without asking only while HEAD stays where a baseline saw it (4C)."""
     _update_trust(project, owned=True)
+    from . import mods
+
+    mods.record_baseline(project)
 
 
 def trust_env(project: Path, digest: str | None) -> None:

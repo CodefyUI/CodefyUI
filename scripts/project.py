@@ -723,7 +723,8 @@ def cmd_restore(args: argparse.Namespace) -> int:
             continue
         inst_args = argparse.Namespace(
             force=True, no_confirm=yes, trust_author=True,
-            accept_capabilities=yes, pinned_sha=sha)
+            accept_capabilities=yes, pinned_sha=sha,
+            consent_flag="--yes")
         # Trust _install_github's return code (spec ID11: install BY the pinned
         # sha). It never re-resolves the ref when pinned_sha is set, so success
         # (rc == 0) already means the installed plugin is at this exact sha.
@@ -745,13 +746,15 @@ def _print_mods_scan(scan: dict, state: dict) -> None:
         size = f"{f['size']} B"
         lines = f", {f['lines']} lines" if "lines" in f else ""
         print(f"  mods/{f['path']}  ({size}{lines})")
+        if not f.get("loads", True):
+            print("    never loaded (only .py files directly in mods/nodes/, "
+                  "not __init__.py, and mods/presets/*.json are read)")
+            continue
         if f.get("role") != "node":
             continue
         finding = f.get("finding")
         if finding:
-            where = f"line {finding['line']}: " if finding.get("line") else ""
-            warn(f"    掃描：{where}{finding['message']}",
-                 f"    scan: {where}{finding['message']}")
+            warn(f"    掃描：{finding['message']}", f"    scan: {finding['message']}")
         else:
             print("    scan: no findings")
         for need in f.get("needs") or ():
